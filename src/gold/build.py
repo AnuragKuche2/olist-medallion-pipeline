@@ -310,6 +310,9 @@ def build_fact_orders(spark: SparkSession) -> int:
         .join(order_reviews, "order_id", "left")
     )
 
+    # Deduplicate — customer join can produce multiple rows per order
+    df = df.dropDuplicates(["order_id"])
+
     # Add date_key for date dimension join
     df = df.withColumn("date_key", F.date_format("order_purchase_timestamp", "yyyyMMdd").cast(IntegerType()))
 
