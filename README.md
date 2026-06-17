@@ -290,5 +290,5 @@ This project is for educational/assessment purposes. Data source: [Olist Brazili
 
 ## 👤 Author
 
-**Anurag Kuche** — AWS Support Engineer transitioning to Data Engineering  
+**Anurag Kuche** — AWS Data Builder  
 GitHub: [@AnuragKuche2](https://github.com/AnuragKuche2)
