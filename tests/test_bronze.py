@@ -36,19 +36,18 @@ class TestBronzeSchemaEnforcement:
 
     def test_corrupt_record_capture(self, spark, tmp_path_delta):
         """Records that don't match schema should be captured in _corrupt_record."""
-        # Write a CSV with a bad row
         import os
         csv_path = os.path.join(tmp_path_delta, "test.csv")
         with open(csv_path, "w") as f:
-            f.write("id,name,value\n")
-            f.write("1,Alice,100\n")
-            f.write("2,Bob,200\n")
-            f.write("this,has,too,many,columns\n")
+            f.write("id,name,value\n")      # header
+            f.write("1,Alice,100\n")         # good
+            f.write("2,Bob,200\n")           # good
+            f.write("bad_row_no_commas\n")   # corrupt — can't parse into 3 columns
 
         schema = StructType([
-            StructField("id", StringType(), True),
+            StructField("id", IntegerType(), True),
             StructField("name", StringType(), True),
-            StructField("value", StringType(), True),
+            StructField("value", IntegerType(), True),
             StructField("_corrupt_record", StringType(), True),
         ])
 
