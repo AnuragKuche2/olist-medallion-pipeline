@@ -1,15 +1,14 @@
 # profiles.yml
-# dbt-spark profile — connects to local Spark Thrift Server
+# dbt-spark profile — connects to local Spark Thrift Server (NOSASL)
 #
 # To start Thrift Server on EC2:
 #   $SPARK_HOME/sbin/start-thriftserver.sh \
 #     --master local[*] \
+#     --packages io.delta:delta-spark_2.12:3.1.0 \
 #     --conf spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension \
 #     --conf spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog \
-#     --conf spark.sql.warehouse.dir=s3a://anukuche-olist-datalake/warehouse
-#
-# To migrate to Databricks later:
-#   Just change 'method' to 'token', add 'host', 'token', 'http_path'
+#     --conf spark.driver.memory=3g \
+#     --hiveconf hive.server2.authentication=NOSASL
 
 olist_spark:
   target: dev
@@ -19,9 +18,11 @@ olist_spark:
       method: thrift
       host: localhost
       port: 10000
-      schema: gold
-      connect_retries: 3
-      connect_timeout: 60
+      user: anonymous
+      schema: default
+      connect_retries: 5
+      connect_timeout: 120
+      auth: NOSASL
 
     # Databricks (Phase 3 — uncomment when ready):
     # prod:
