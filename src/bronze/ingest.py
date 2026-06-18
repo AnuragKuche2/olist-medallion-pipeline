@@ -12,6 +12,7 @@ Why generic?
 from pyspark.sql import functions as F
 from pyspark.sql.types import StringType, StructType
 import uuid
+import os
 from datetime import datetime
 
 from src.utils.spark_session import get_spark_session
@@ -21,6 +22,9 @@ from src.utils.spark_session import get_spark_session
 # CONFIGURATION — All 9 tables defined here
 # ============================================================
 S3_BUCKET = "anukuche-olist-datalake"
+# Support synthetic data: set LANDING_FOLDER=landing_synthetic to use generated data
+LANDING_FOLDER = os.environ.get("LANDING_FOLDER", "landing")
+BRONZE_FOLDER = os.environ.get("BRONZE_FOLDER", "bronze")
 
 # Import all schemas
 from src.utils.schema_definitions import (
@@ -105,9 +109,9 @@ def ingest_to_bronze(table_name: str) -> int:
     schema = config["schema"]
     bronze_table = config["bronze_table"]
 
-    source_path = f"s3a://{S3_BUCKET}/landing/{source_file}"
-    bronze_path = f"s3a://{S3_BUCKET}/bronze/{bronze_table}"
-    quarantine_path = f"s3a://{S3_BUCKET}/quarantine/{bronze_table}"
+    source_path = f"s3a://{S3_BUCKET}/{LANDING_FOLDER}/{source_file}"
+    bronze_path = f"s3a://{S3_BUCKET}/{BRONZE_FOLDER}/{bronze_table}"
+    quarantine_path = f"s3a://{S3_BUCKET}/{BRONZE_FOLDER}_quarantine/{bronze_table}"
 
     # --- Start Spark ---
     spark = get_spark_session(app_name=f"Bronze_Ingest_{table_name}")

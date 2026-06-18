@@ -19,6 +19,7 @@ from pyspark.sql import DataFrame, SparkSession, functions as F
 from pyspark.sql.types import (
     TimestampType, DoubleType, IntegerType, StringType
 )
+import os
 from datetime import datetime
 
 from src.utils.spark_session import get_spark_session
@@ -28,8 +29,11 @@ from src.utils.spark_session import get_spark_session
 # CONFIGURATION
 # ============================================================
 S3_BUCKET = "anukuche-olist-datalake"
-BRONZE_PATH = f"s3a://{S3_BUCKET}/bronze"
-SILVER_PATH = f"s3a://{S3_BUCKET}/silver"
+# Support synthetic data: set BRONZE_FOLDER / SILVER_FOLDER env vars
+BRONZE_FOLDER = os.environ.get("BRONZE_FOLDER", "bronze")
+SILVER_FOLDER = os.environ.get("SILVER_FOLDER", "silver")
+BRONZE_PATH = f"s3a://{S3_BUCKET}/{BRONZE_FOLDER}"
+SILVER_PATH = f"s3a://{S3_BUCKET}/{SILVER_FOLDER}"
 
 # Brazilian state → region mapping
 STATE_TO_REGION = {

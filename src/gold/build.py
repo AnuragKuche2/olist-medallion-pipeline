@@ -17,6 +17,7 @@ Phase 2: Migrate to dbt on Databricks with proper refs, tests, and lineage.
 
 from pyspark.sql import DataFrame, SparkSession, functions as F, Window
 from pyspark.sql.types import IntegerType, DoubleType, BooleanType
+import os
 from datetime import datetime
 
 from src.utils.spark_session import get_spark_session
@@ -26,8 +27,11 @@ from src.utils.spark_session import get_spark_session
 # CONFIGURATION
 # ============================================================
 S3_BUCKET = "anukuche-olist-datalake"
-SILVER_PATH = f"s3a://{S3_BUCKET}/silver"
-GOLD_PATH = f"s3a://{S3_BUCKET}/gold"
+# Support synthetic data: set SILVER_FOLDER / GOLD_FOLDER env vars
+SILVER_FOLDER = os.environ.get("SILVER_FOLDER", "silver")
+GOLD_FOLDER = os.environ.get("GOLD_FOLDER", "gold")
+SILVER_PATH = f"s3a://{S3_BUCKET}/{SILVER_FOLDER}"
+GOLD_PATH = f"s3a://{S3_BUCKET}/{GOLD_FOLDER}"
 
 
 # ============================================================
