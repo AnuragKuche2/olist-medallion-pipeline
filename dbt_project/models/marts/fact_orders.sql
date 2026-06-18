@@ -36,29 +36,51 @@ customer_lookup AS (
         customer_id,
         customer_unique_id
     FROM {{ ref('stg_customers') }}
+),
+
+ranked AS (
+    SELECT
+        o.order_id,
+        dc.customer_key,
+        CAST(date_format(o.order_purchase_timestamp, 'yyyyMMdd') AS INT) AS date_key,
+        o.order_status,
+        oia.total_item_value,
+        oia.total_freight_value,
+        op.total_payment_value,
+        op.primary_payment_type,
+        op.max_installments,
+        oia.item_count,
+        orv.review_score,
+        o.delivery_days,
+        o.is_late_delivery,
+        o.order_purchase_timestamp,
+        o.order_delivered_customer_date,
+        o.order_estimated_delivery_date,
+        ROW_NUMBER() OVER (PARTITION BY o.order_id ORDER BY o.order_id) AS _rn
+    FROM {{ ref('stg_orders') }} o
+    LEFT JOIN customer_lookup cl ON o.customer_id = cl.customer_id
+    LEFT JOIN {{ ref('dim_customer') }} dc ON cl.customer_unique_id = dc.customer_unique_id
+    LEFT JOIN order_payments op ON o.order_id = op.order_id
+    LEFT JOIN order_items_agg oia ON o.order_id = oia.order_id
+    LEFT JOIN order_reviews orv ON o.order_id = orv.order_id
 )
 
 SELECT
-    o.order_id,
-    dc.customer_key,
-    CAST(date_format(o.order_purchase_timestamp, 'yyyyMMdd') AS INT) AS date_key,
-    o.order_status,
-    oia.total_item_value,
-    oia.total_freight_value,
-    op.total_payment_value,
-    op.primary_payment_type,
-    op.max_installments,
-    oia.item_count,
-    orv.review_score,
-    o.delivery_days,
-    o.is_late_delivery,
-    o.order_purchase_timestamp,
-    o.order_delivered_customer_date,
-    o.order_estimated_delivery_date
-FROM {{ ref('stg_orders') }} o
-LEFT JOIN customer_lookup cl ON o.customer_id = cl.customer_id
-LEFT JOIN {{ ref('dim_customer') }} dc ON cl.customer_unique_id = dc.customer_unique_id
-LEFT JOIN order_payments op ON o.order_id = op.order_id
-LEFT JOIN order_items_agg oia ON o.order_id = oia.order_id
-LEFT JOIN order_reviews orv ON o.order_id = orv.order_id
-QUALIFY ROW_NUMBER() OVER (PARTITION BY o.order_id ORDER BY o.order_id) = 1
+    order_id,
+    customer_key,
+    date_key,
+    order_status,
+    total_item_value,
+    total_freight_value,
+    total_payment_value,
+    primary_payment_type,
+    max_installments,
+    item_count,
+    review_score,
+    delivery_days,
+    is_late_delivery,
+    order_purchase_timestamp,
+    order_delivered_customer_date,
+    order_estimated_delivery_date
+FROM ranked
+WHERE _rn = 1
