@@ -1,0 +1,68 @@
+# infra/eks/cluster-config.yaml
+# EKS Cluster configuration for Spark on Kubernetes
+# Creates: 1 control plane + managed node group for Spark workloads
+#
+# Usage: eksctl create cluster -f cluster-config.yaml
+
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: olist-spark-cluster
+  region: us-west-2
+  version: "1.29"
+  tags:
+    project: olist-medallion-pipeline
+    phase: "2"
+    owner: anukuche
+
+# IAM OIDC provider for IRSA (IAM Roles for Service Accounts)
+iam:
+  withOIDC: true
+
+# Managed node groups
+managedNodeGroups:
+  # Driver node — smaller, always on
+  - name: spark-driver
+    instanceType: m5.large
+    desiredCapacity: 1
+    minSize: 1
+    maxSize: 2
+    volumeSize: 50
+    labels:
+      role: spark-driver
+    tags:
+      nodegroup-role: driver
+
+  # Executor nodes — larger, auto-scale
+  - name: spark-executors
+    instanceType: m5.xlarge
+    desiredCapacity: 3
+    minSize: 0
+    maxSize: 10
+    volumeSize: 100
+    labels:
+      role: spark-executor
+    tags:
+      nodegroup-role: executor
+    # Use Spot instances for cost savings (60-90% cheaper)
+    instancesDistribution:
+      maxPrice: 0.10  # Max bid for Spot
+      instanceTypes:
+        - m5.xlarge
+        - m5a.xlarge
+        - m4.xlarge
+      onDemandBaseCapacity: 1  # 1 On-Demand for stability
+      onDemandPercentageAboveBaseCapacity: 0  # Rest are Spot
+      spotAllocationStrategy: capacity-optimized
+
+# Add-ons
+addons:
+  - name: vpc-cni
+    version: latest
+  - name: coredns
+    version: latest
+  - name: kube-proxy
+    version: latest
+  - name: aws-ebs-csi-driver
+    version: latest

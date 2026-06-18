@@ -1,0 +1,46 @@
+# infra/eks/spark-rbac.yaml
+# RBAC for Spark on Kubernetes
+# Spark needs permissions to create/manage executor pods
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: spark
+  labels:
+    app: spark
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spark-sa
+  namespace: spark
+  annotations:
+    # IRSA — links K8s service account to IAM role for S3 access
+    eks.amazonaws.com/role-arn: arn:aws:iam::025078772864:role/olist-spark-eks-role
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: spark-role
+  namespace: spark
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "services", "configmaps", "persistentvolumeclaims"]
+    verbs: ["create", "get", "list", "watch", "delete", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: spark-role-binding
+  namespace: spark
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: spark-role
+subjects:
+  - kind: ServiceAccount
+    name: spark-sa
+    namespace: spark
