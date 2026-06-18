@@ -1,0 +1,51 @@
+# models/staging/schema.yml
+# Source definitions and basic column-level documentation
+
+version: 2
+
+models:
+  - name: stg_orders
+    description: "Staging layer for orders — direct from Silver"
+    columns:
+      - name: order_id
+        description: "Unique order identifier"
+        tests:
+          - not_null
+          - unique
+
+  - name: stg_order_items
+    description: "Staging layer for order line items"
+    columns:
+      - name: order_id
+        tests:
+          - not_null
+      - name: price
+        tests:
+          - not_null
+
+  - name: stg_customers
+    description: "Staging layer for customers"
+    columns:
+      - name: customer_id
+        tests:
+          - not_null
+          - unique
+      - name: customer_unique_id
+        tests:
+          - not_null
+
+  - name: stg_products
+    description: "Staging layer for products"
+    columns:
+      - name: product_id
+        tests:
+          - not_null
+          - unique
+
+  - name: stg_sellers
+    description: "Staging layer for sellers"
+    columns:
+      - name: seller_id
+        tests:
+          - not_null
+          - unique

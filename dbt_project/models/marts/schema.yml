@@ -1,0 +1,91 @@
+# models/marts/schema.yml
+# Mart-level documentation and tests
+
+version: 2
+
+models:
+  - name: dim_date
+    description: "Date dimension covering full order date range"
+    columns:
+      - name: date_key
+        description: "Integer key in yyyyMMdd format"
+        tests:
+          - not_null
+          - unique
+
+  - name: dim_customer
+    description: "Customer dimension — grain: one row per customer_unique_id"
+    columns:
+      - name: customer_key
+        description: "Surrogate key"
+        tests:
+          - not_null
+          - unique
+      - name: customer_unique_id
+        tests:
+          - not_null
+
+  - name: dim_product
+    description: "Product dimension with English category names"
+    columns:
+      - name: product_key
+        tests:
+          - not_null
+          - unique
+      - name: product_id
+        tests:
+          - not_null
+
+  - name: dim_seller
+    description: "Seller dimension with performance metrics and tier"
+    columns:
+      - name: seller_key
+        tests:
+          - not_null
+          - unique
+      - name: seller_tier
+        description: "platinum (100+), gold (50+), silver (10+), bronze (<10)"
+        tests:
+          - accepted_values:
+              values: ['platinum', 'gold', 'silver', 'bronze']
+
+  - name: dim_geography
+    description: "Geography dimension — one row per zip prefix"
+    columns:
+      - name: geo_key
+        tests:
+          - not_null
+          - unique
+
+  - name: fact_orders
+    description: "Order fact table — one row per order with pre-aggregated metrics"
+    columns:
+      - name: order_id
+        tests:
+          - not_null
+          - unique
+      - name: date_key
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_date')
+              field: date_key
+      - name: customer_key
+        tests:
+          - relationships:
+              to: ref('dim_customer')
+              field: customer_key
+
+  - name: fact_order_items
+    description: "Line-item fact table — one row per order item"
+    columns:
+      - name: product_key
+        tests:
+          - relationships:
+              to: ref('dim_product')
+              field: product_key
+      - name: seller_key
+        tests:
+          - relationships:
+              to: ref('dim_seller')
+              field: seller_key
