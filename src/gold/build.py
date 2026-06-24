@@ -22,12 +22,15 @@ import os
 from datetime import datetime
 
 from src.utils.spark_session import get_spark_session
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
-S3_BUCKET = "anukuche-olist-datalake"
+S3_BUCKET = os.environ.get("S3_BUCKET", "anukuche-olist-datalake")
 # Support synthetic data: set SILVER_FOLDER / GOLD_FOLDER env vars
 SILVER_FOLDER = os.environ.get("SILVER_FOLDER", "silver")
 GOLD_FOLDER = os.environ.get("GOLD_FOLDER", "gold")
@@ -101,7 +104,7 @@ def build_dim_date(spark: SparkSession) -> int:
     Build date dimension from order timestamps.
     Covers full date range in the dataset (2016-09 to 2018-10).
     """
-    print("\n📐 Building: dim_date")
+    logger.info("Building: dim_date")
 
     # Read orders to get date range
     orders = spark.read.format("delta").load(f"{SILVER_PATH}/orders")
@@ -124,10 +127,11 @@ def build_dim_date(spark: SparkSession) -> int:
     # Build date attributes
     df = add_date_attributes(df, "full_date")
 
-    df.write.format("delta").mode("overwrite").save(f"{GOLD_PATH}/dim_date")
-
+    df.cache()
     count = df.count()
-    print(f"   ✅ Written: {count:,} records ({date_range.min_date} to {date_range.max_date})")
+    df.write.format("delta").mode("overwrite").save(f"{GOLD_PATH}/dim_date")
+    df.unpersist()
+    logger.info(f"Written {count:,} records ({date_range.min_date} to {date_range.max_date})")
     return count
 
 
@@ -136,12 +140,29 @@ def build_dim_customer(spark: SparkSession) -> int:
     Build customer dimension.
     Grain: one row per customer_unique_id (not customer_id).
     """
-    print("\n📐 Building: dim_customer")
+    logger.info("Building: dim_customer")
 
     customers = spark.read.format("delta").load(f"{SILVER_PATH}/customers")
+    orders = spark.read.format("delta").load(f"{SILVER_PATH}/orders")
 
-    # Deduplicate to unique customers (a customer can have multiple customer_ids)
-    df = customers.dropDuplicates(["customer_unique_id"])
+    # A customer_unique_id can have multiple customer_ids (one per order).
+    # Keep the row associated with their MOST RECENT order so the address
+    # reflects where they last shipped to (important for geo analytics).
+    customer_orders = customers.join(
+        orders.select("customer_id", "order_purchase_timestamp"),
+        "customer_id",
+        "left"
+    )
+
+    window = Window.partitionBy("customer_unique_id").orderBy(
+        F.col("order_purchase_timestamp").desc_nulls_last()
+    )
+    df = (
+        customer_orders
+        .withColumn("_rn", F.row_number().over(window))
+        .filter(F.col("_rn") == 1)
+        .drop("_rn", "order_purchase_timestamp", "customer_id")
+    )
 
     df = (
         df
@@ -159,10 +180,11 @@ def build_dim_customer(spark: SparkSession) -> int:
         )
     )
 
-    df.write.format("delta").mode("overwrite").save(f"{GOLD_PATH}/dim_customer")
-
+    df.cache()
     count = df.count()
-    print(f"   ✅ Written: {count:,} records")
+    df.write.format("delta").mode("overwrite").save(f"{GOLD_PATH}/dim_customer")
+    df.unpersist()
+    logger.info(f"Written {count:,} records")
     return count
 
 
@@ -171,7 +193,7 @@ def build_dim_product(spark: SparkSession) -> int:
     Build product dimension with English category names.
     Joins products with category translation.
     """
-    print("\n📐 Building: dim_product")
+    logger.info("Building: dim_product")
 
     products = spark.read.format("delta").load(f"{SILVER_PATH}/products")
     categories = spark.read.format("delta").load(f"{SILVER_PATH}/category_translation")
@@ -200,10 +222,11 @@ def build_dim_product(spark: SparkSession) -> int:
         )
     )
 
-    df.write.format("delta").mode("overwrite").save(f"{GOLD_PATH}/dim_product")
-
+    df.cache()
     count = df.count()
-    print(f"   ✅ Written: {count:,} records")
+    df.write.format("delta").mode("overwrite").save(f"{GOLD_PATH}/dim_product")
+    df.unpersist()
+    logger.info(f"Written {count:,} records")
     return count
 
 
@@ -212,7 +235,7 @@ def build_dim_seller(spark: SparkSession) -> int:
     Build seller dimension with performance metrics.
     Enriches with average review score and order count.
     """
-    print("\n📐 Building: dim_seller")
+    logger.info("Building: dim_seller")
 
     sellers = spark.read.format("delta").load(f"{SILVER_PATH}/sellers")
     order_items = spark.read.format("delta").load(f"{SILVER_PATH}/order_items")
@@ -262,41 +285,41 @@ def build_dim_seller(spark: SparkSession) -> int:
         )
     )
 
-    df.write.format("delta").mode("overwrite").save(f"{GOLD_PATH}/dim_seller")
-
+    df.cache()
     count = df.count()
-    print(f"   ✅ Written: {count:,} records")
+    df.write.format("delta").mode("overwrite").save(f"{GOLD_PATH}/dim_seller")
+    df.unpersist()
+    logger.info(f"Written {count:,} records")
     return count
 
 
 def build_dim_geography(spark: SparkSession) -> int:
     """
-    Build geography dimension from geolocation.
-    Grain: one row per zip_code_prefix.
+    Build geography dimension from geolocation data.
+    Grain: one row per zip_code_prefix with avg coordinates.
     """
-    print("\n📐 Building: dim_geography")
+    logger.info("Building: dim_geography")
 
     geo = spark.read.format("delta").load(f"{SILVER_PATH}/geolocation")
 
     df = (
         geo
-        # Deterministic surrogate key (stable across rebuilds)
-        .withColumn("geo_key", F.xxhash64(F.col("geolocation_zip_code_prefix")))
+        .withColumn("geography_key", F.xxhash64(F.col("geolocation_zip_code_prefix")))
         .select(
-            "geo_key",
+            "geography_key",
             F.col("geolocation_zip_code_prefix").alias("zip_code_prefix"),
+            F.col("geolocation_lat").alias("latitude"),
+            F.col("geolocation_lng").alias("longitude"),
             F.col("geolocation_city").alias("city"),
             F.col("geolocation_state").alias("state"),
-            "region",
-            F.round("geolocation_lat", 6).alias("latitude"),
-            F.round("geolocation_lng", 6).alias("longitude"),
         )
     )
 
-    df.write.format("delta").mode("overwrite").save(f"{GOLD_PATH}/dim_geography")
-
+    df.cache()
     count = df.count()
-    print(f"   ✅ Written: {count:,} records")
+    df.write.format("delta").mode("overwrite").save(f"{GOLD_PATH}/dim_geography")
+    df.unpersist()
+    logger.info(f"Written {count:,} records")
     return count
 
 
@@ -306,124 +329,103 @@ def build_dim_geography(spark: SparkSession) -> int:
 
 def build_fact_orders(spark: SparkSession) -> int:
     """
-    Build fact_orders — one row per order.
-    Pre-aggregates payment and item-level info to order grain.
-    Includes delivery metrics and review scores.
+    Build fact_orders: one row per order, enriched with payment/item aggregates
+    and dimension keys.
     """
-    print("\n📊 Building: fact_orders")
+    logger.info("Building: fact_orders")
 
     orders = spark.read.format("delta").load(f"{SILVER_PATH}/orders")
+    customers = spark.read.format("delta").load(f"{SILVER_PATH}/customers")
     payments = spark.read.format("delta").load(f"{SILVER_PATH}/order_payments")
     items = spark.read.format("delta").load(f"{SILVER_PATH}/order_items")
-    reviews = spark.read.format("delta").load(f"{SILVER_PATH}/order_reviews")
-    customers = spark.read.format("delta").load(f"{SILVER_PATH}/customers")
 
-    # Load dim_customer for surrogate key lookup
-    dim_customer = spark.read.format("delta").load(f"{GOLD_PATH}/dim_customer")
+    # Aggregate payments and items to order grain
+    payment_agg = aggregate_order_payments(payments)
+    item_agg = aggregate_order_items(items)
 
-    # Aggregate payments to order level
-    order_payments = aggregate_order_payments(payments)
-
-    # Aggregate items to order level
-    order_items_agg = aggregate_order_items(items)
-
-    # Get review score per order
-    order_reviews = reviews.select("order_id", "review_score")
-
-    # Get customer_unique_id for key lookup
-    customer_lookup = customers.select("customer_id", "customer_unique_id")
+    # Get customer_unique_id for the surrogate key lookup
+    customer_lookup = customers.select("customer_id", "customer_unique_id").dropDuplicates(["customer_id"])
 
     # Build fact table
     df = (
         orders
         .join(customer_lookup, "customer_id", "left")
-        .join(dim_customer.select("customer_key", "customer_unique_id"), "customer_unique_id", "left")
-        .join(order_payments, "order_id", "left")
-        .join(order_items_agg, "order_id", "left")
-        .join(order_reviews, "order_id", "left")
+        .join(payment_agg, "order_id", "left")
+        .join(item_agg, "order_id", "left")
     )
 
-    # Deduplicate — customer join can produce multiple rows per order
-    df = df.dropDuplicates(["order_id"])
-
-    # Add date_key for date dimension join
-    df = df.withColumn("date_key", F.date_format("order_purchase_timestamp", "yyyyMMdd").cast(IntegerType()))
-
-    # Select final columns
-    df = df.select(
-        "order_id",
-        "customer_key",
-        "date_key",
-        "order_status",
-        "total_item_value",
-        "total_freight_value",
-        "total_payment_value",
-        "primary_payment_type",
-        "max_installments",
-        "item_count",
-        "review_score",
-        "delivery_days",
-        "is_late_delivery",
-        "order_purchase_timestamp",
-        "order_delivered_customer_date",
-        "order_estimated_delivery_date",
+    # Add dimension keys
+    df = (
+        df
+        .withColumn("date_key", F.date_format(F.to_date("order_purchase_timestamp"), "yyyyMMdd").cast(IntegerType()))
+        .withColumn("customer_key", F.xxhash64(F.col("customer_unique_id")))
+        .select(
+            "order_id",
+            "date_key",
+            "customer_key",
+            "order_status",
+            "order_purchase_timestamp",
+            "order_approved_at",
+            "order_delivered_carrier_date",
+            "order_delivered_customer_date",
+            "order_estimated_delivery_date",
+            "delivery_days",
+            "is_late_delivery",
+            "total_payment_value",
+            "primary_payment_type",
+            "max_installments",
+            "total_item_value",
+            "total_freight_value",
+            "item_count",
+        )
     )
 
-    df.write.format("delta").mode("overwrite").save(f"{GOLD_PATH}/fact_orders")
-
+    df.cache()
     count = df.count()
-    print(f"   ✅ Written: {count:,} records")
+    df.write.format("delta").mode("overwrite").partitionBy("date_key").save(f"{GOLD_PATH}/fact_orders")
+    df.unpersist()
+    logger.info(f"Written {count:,} records")
     return count
 
 
 def build_fact_order_items(spark: SparkSession) -> int:
     """
-    Build fact_order_items — one row per order line item.
-    Grain: (order_id, order_item_id) — more granular than fact_orders.
-    Links to product and seller dimensions.
+    Build fact_order_items: one row per order line item with dimension keys.
+    Grain: (order_id, order_item_id).
     """
-    print("\n📊 Building: fact_order_items")
+    logger.info("Building: fact_order_items")
 
     items = spark.read.format("delta").load(f"{SILVER_PATH}/order_items")
     orders = spark.read.format("delta").load(f"{SILVER_PATH}/orders")
 
-    # Load dims for surrogate key lookups
-    dim_product = spark.read.format("delta").load(f"{GOLD_PATH}/dim_product")
-    dim_seller = spark.read.format("delta").load(f"{GOLD_PATH}/dim_seller")
-
-    # Join items with order date for date_key
-    df = items.join(
-        orders.select("order_id", "order_purchase_timestamp"),
+    # Get date from orders for the date key
+    order_dates = orders.select(
         "order_id",
-        "left"
+        F.date_format(F.to_date("order_purchase_timestamp"), "yyyyMMdd").cast(IntegerType()).alias("date_key"),
     )
 
-    # Lookup surrogate keys
     df = (
-        df
-        .join(dim_product.select("product_key", "product_id"), "product_id", "left")
-        .join(dim_seller.select("seller_key", "seller_id"), "seller_id", "left")
+        items
+        .join(order_dates, "order_id", "left")
+        .withColumn("product_key", F.xxhash64(F.col("product_id")))
+        .withColumn("seller_key", F.xxhash64(F.col("seller_id")))
+        .select(
+            "order_id",
+            "order_item_id",
+            "date_key",
+            "product_key",
+            "seller_key",
+            "price",
+            "freight_value",
+            "shipping_limit_date",
+        )
     )
 
-    # Add date_key
-    df = df.withColumn("date_key", F.date_format("order_purchase_timestamp", "yyyyMMdd").cast(IntegerType()))
-
-    # Select final columns
-    df = df.select(
-        "order_id",
-        "order_item_id",
-        "product_key",
-        "seller_key",
-        "date_key",
-        "price",
-        "freight_value",
-        "shipping_limit_date",
-    )
-
-    df.write.format("delta").mode("overwrite").save(f"{GOLD_PATH}/fact_order_items")
-
+    df.cache()
     count = df.count()
-    print(f"   ✅ Written: {count:,} records")
+    df.write.format("delta").mode("overwrite").partitionBy("date_key").save(f"{GOLD_PATH}/fact_order_items")
+    df.unpersist()
+    logger.info(f"Written {count:,} records")
     return count
 
 
@@ -431,67 +433,39 @@ def build_fact_order_items(spark: SparkSession) -> int:
 # BUILD ALL
 # ============================================================
 def build_all():
-    """Build complete Gold star schema."""
-
-    print("=" * 60)
-    print("GOLD LAYER — Star Schema Build")
-    print("=" * 60)
+    """Build the full Gold star schema."""
+    logger.info("=" * 60)
+    logger.info("GOLD LAYER — Star Schema Build")
+    logger.info("=" * 60)
 
     spark = get_spark_session(app_name="Gold_Build")
 
+    # Dimensions first (facts reference them)
     results = {}
+    results["dim_date"] = build_dim_date(spark)
+    results["dim_customer"] = build_dim_customer(spark)
+    results["dim_product"] = build_dim_product(spark)
+    results["dim_seller"] = build_dim_seller(spark)
+    results["dim_geography"] = build_dim_geography(spark)
 
-    # Build dimensions FIRST (fact tables reference them)
-    print("\n" + "-" * 40)
-    print("DIMENSIONS")
-    print("-" * 40)
+    # Facts
+    results["fact_orders"] = build_fact_orders(spark)
+    results["fact_order_items"] = build_fact_order_items(spark)
 
-    dims = [
-        ("dim_date", build_dim_date),
-        ("dim_customer", build_dim_customer),
-        ("dim_product", build_dim_product),
-        ("dim_seller", build_dim_seller),
-        ("dim_geography", build_dim_geography),
-    ]
-
-    for name, build_fn in dims:
-        count = build_fn(spark)
-        results[name] = count
-
-    # Build facts AFTER dimensions
-    print("\n" + "-" * 40)
-    print("FACTS")
-    print("-" * 40)
-
-    facts = [
-        ("fact_orders", build_fact_orders),
-        ("fact_order_items", build_fact_order_items),
-    ]
-
-    for name, build_fn in facts:
-        count = build_fn(spark)
-        results[name] = count
-
-    # --- Summary ---
-    print("\n" + "=" * 60)
-    print("GOLD LAYER SUMMARY")
-    print("=" * 60)
-    print("\n   Dimensions:")
+    # Summary
+    logger.info("=" * 60)
+    logger.info("SUMMARY")
+    logger.info("=" * 60)
     for table, count in results.items():
-        if table.startswith("dim_"):
-            print(f"      {table:25s} → {count:>10,} records")
-    print("\n   Facts:")
-    for table, count in results.items():
-        if table.startswith("fact_"):
-            print(f"      {table:25s} → {count:>10,} records")
-    print(f"\n   {'TOTAL':28s} → {sum(results.values()):>10,} records")
-    print("=" * 60)
+        logger.info(f"  {table:25s} → {count:>10,} records")
+    logger.info(f"  {'TOTAL':25s} → {sum(results.values()):>10,} records")
+    logger.info("=" * 60)
+
+    # Clean shutdown — release Spark resources
+    spark.stop()
 
     return results
 
 
-# ============================================================
-# RUN
-# ============================================================
 if __name__ == "__main__":
     build_all()

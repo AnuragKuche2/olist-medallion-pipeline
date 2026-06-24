@@ -16,12 +16,15 @@ import os
 from datetime import datetime
 
 from src.utils.spark_session import get_spark_session
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 # ============================================================
 # CONFIGURATION — All 9 tables defined here
 # ============================================================
-S3_BUCKET = "anukuche-olist-datalake"
+S3_BUCKET = os.environ.get("S3_BUCKET", "anukuche-olist-datalake")
 # Support synthetic data: set LANDING_FOLDER=landing_synthetic to use generated data
 LANDING_FOLDER = os.environ.get("LANDING_FOLDER", "landing")
 BRONZE_FOLDER = os.environ.get("BRONZE_FOLDER", "bronze")
@@ -139,9 +142,9 @@ def ingest_to_bronze(table_name: str) -> int:
 
     # --- Start Spark ---
     spark = get_spark_session(app_name=f"Bronze_Ingest_{table_name}")
-    print(f"\n🚀 Starting bronze ingestion: {table_name}")
-    print(f"   Source: {source_path}")
-    print(f"   Target: {bronze_path}")
+    logger.info(f"Starting bronze ingestion: {table_name}")
+    logger.info(f"  Source: {source_path}")
+    logger.info(f"  Target: {bronze_path}")
 
     # --- Read CSV with explicit schema + corrupt record handling ---
     read_schema = schema.add("_corrupt_record", StringType(), True)
@@ -171,12 +174,11 @@ def ingest_to_bronze(table_name: str) -> int:
     bad_count = bad_df.count()
     if bad_count > 0:
         bad_df.write.format("delta").mode("append").save(quarantine_path)
-        print(f"   ⚠️  Quarantined: {bad_count} bad records")
+        logger.warning(f"Quarantined {bad_count} bad records for {table_name}")
 
     # --- Log results ---
     good_count = enriched_df.count()
-    print(f"   ✅ Written: {good_count} records")
-    print(f"   📋 Batch ID: {batch_id}")
+    logger.info(f"Written {good_count:,} records (batch: {batch_id})")
 
     return good_count
 
@@ -187,9 +189,9 @@ def ingest_to_bronze(table_name: str) -> int:
 def ingest_all():
     """Ingest all 9 tables from landing to bronze."""
 
-    print("=" * 60)
-    print("BRONZE LAYER — Full Ingestion")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("BRONZE LAYER — Full Ingestion")
+    logger.info("=" * 60)
 
     results = {}
     for table_name in TABLE_CONFIGS:
@@ -197,13 +199,16 @@ def ingest_all():
         results[table_name] = count
 
     # --- Summary ---
-    print("\n" + "=" * 60)
-    print("SUMMARY")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("SUMMARY")
+    logger.info("=" * 60)
     for table, count in results.items():
-        print(f"   {table:25s} → {count:>10,} records")
-    print(f"\n   {'TOTAL':25s} → {sum(results.values()):>10,} records")
-    print("=" * 60)
+        logger.info(f"  {table:25s} → {count:>10,} records")
+    logger.info(f"  {'TOTAL':25s} → {sum(results.values()):>10,} records")
+    logger.info("=" * 60)
+
+    # Clean shutdown — release Spark resources
+    get_spark_session().stop()
 
     return results
 

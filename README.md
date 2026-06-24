@@ -24,7 +24,7 @@
 │                                                                                         │
 │   Storage: AWS S3 (s3a://)          Compute: PySpark 3.5 on EC2                         │
 │   Format: Delta Lake 3.1            Orchestration: Apache Airflow                       │
-│   Quality: Custom validation suite  Testing: pytest (27 tests)                          │
+│   Quality: Custom validation suite  Testing: pytest (41 tests)                          │
 │                                                                                         │
 └─────────────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -113,7 +113,7 @@
 | **AWS S3** | Data lake storage (all layers) | Scalable, cheap, decoupled from compute |
 | **AWS EC2** (t3.large) | Compute | 8GB RAM sufficient for Phase 1 (140MB) |
 | **Apache Airflow** | Orchestration | DAG dependencies, scheduling, monitoring |
-| **pytest** | Unit testing | 27 tests validating transformation logic |
+| **pytest** | Unit testing | 41 tests validating transformation logic |
 | **AWS IAM** | Security | Role-based S3 access (no hardcoded keys) |
 | **Git/GitHub** | Version control | Conventional commits, clean history |
 
@@ -129,8 +129,7 @@ olist-medallion-pipeline/
 │   │   ├── spark_session.py          # Reusable Spark session factory
 │   │   └── schema_definitions.py     # Explicit schemas for all 9 tables
 │   ├── bronze/
-│   │   ├── ingest.py                 # Generic ingestion (config-driven, DRY)
-│   │   └── ingest_orders.py          # Single-table example
+│   │   └── ingest.py                 # Generic ingestion (config-driven, DRY)
 │   ├── silver/
 │   │   └── transform.py             # Per-table cleaning + shared utilities
 │   ├── gold/
@@ -227,7 +226,7 @@ bash run_synthetic_pipeline.sh
 
 ```bash
 $ python3 -m pytest tests/ -v
-============================= 27 passed in 28.04s =============================
+============================= 41 passed in 28.04s =============================
 ```
 
 Tests run on **local Spark** (no S3 dependency) with in-memory DataFrames, validating:
@@ -302,7 +301,7 @@ Tests run on **local Spark** (no S3 dependency) with in-memory DataFrames, valid
 | **Streaming ingestion** | Auto Loader / Structured Streaming for incremental |
 | **MERGE INTO** | Idempotent upserts (replace overwrite) |
 | **Delta OPTIMIZE + Z-ORDER** | File compaction + co-location for query performance |
-| **CI/CD** | Automated testing on push via GitHub Actions |
+| **CI/CD** | ✅ Done — GitHub Actions runs `pytest` on push/PR (Python 3.9 & 3.11) |
 | **SCD Type 2** | Slowly Changing Dimensions for historical tracking |
 
 ---

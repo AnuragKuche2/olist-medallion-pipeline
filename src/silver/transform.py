@@ -19,12 +19,15 @@ in-memory DataFrames) while the wrappers handle storage.
 
 from pyspark.sql import DataFrame, SparkSession, functions as F
 from pyspark.sql.types import (
-    TimestampType, DoubleType, IntegerType, StringType
+    TimestampType, DoubleType, IntegerType, StringType, BooleanType
 )
 import os
 from datetime import datetime
 
 from src.utils.spark_session import get_spark_session
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 # ============================================================
@@ -102,9 +105,11 @@ def _add_silver_metadata(df: DataFrame) -> DataFrame:
 def _write_silver(df: DataFrame, table: str) -> int:
     """Add Silver metadata, write to Delta, and return the row count."""
     df = _add_silver_metadata(df)
-    df.write.format("delta").mode("overwrite").save(f"{SILVER_PATH}/{table}")
+    df.cache()
     count = df.count()
-    print(f"   ✅ Written: {count:,} records")
+    df.write.format("delta").mode("overwrite").save(f"{SILVER_PATH}/{table}")
+    df.unpersist()
+    logger.info(f"Written {count:,} records to {table}")
     return count
 
 
@@ -142,6 +147,9 @@ def clean_orders(df: DataFrame) -> DataFrame:
     df = df.withColumn(
         "is_late_delivery",
         F.when(
+            F.col("order_delivered_customer_date").isNull() | F.col("order_estimated_delivery_date").isNull(),
+            F.lit(None).cast(BooleanType()),
+        ).when(
             F.col("order_delivered_customer_date") > F.col("order_estimated_delivery_date"),
             F.lit(True),
         ).otherwise(F.lit(False)),
@@ -152,7 +160,7 @@ def clean_orders(df: DataFrame) -> DataFrame:
 
 def transform_orders(spark: SparkSession) -> int:
     """Read Bronze orders → clean → write Silver."""
-    print("\n🔄 Transforming: orders")
+    logger.info("Transforming: orders")
     df = spark.read.format("delta").load(f"{BRONZE_PATH}/orders")
     return _write_silver(clean_orders(df), "orders")
 
@@ -181,7 +189,7 @@ def clean_order_items(df: DataFrame) -> DataFrame:
 
 def transform_order_items(spark: SparkSession) -> int:
     """Read Bronze order_items → clean → write Silver."""
-    print("\n🔄 Transforming: order_items")
+    logger.info("Transforming: order_items")
     df = spark.read.format("delta").load(f"{BRONZE_PATH}/order_items")
     return _write_silver(clean_order_items(df), "order_items")
 
@@ -204,7 +212,7 @@ def clean_order_payments(df: DataFrame) -> DataFrame:
 
 def transform_order_payments(spark: SparkSession) -> int:
     """Read Bronze order_payments → clean → write Silver."""
-    print("\n🔄 Transforming: order_payments")
+    logger.info("Transforming: order_payments")
     df = spark.read.format("delta").load(f"{BRONZE_PATH}/order_payments")
     return _write_silver(clean_order_payments(df), "order_payments")
 
@@ -235,7 +243,7 @@ def clean_order_reviews(df: DataFrame) -> DataFrame:
 
 def transform_order_reviews(spark: SparkSession) -> int:
     """Read Bronze order_reviews → clean → write Silver."""
-    print("\n🔄 Transforming: order_reviews")
+    logger.info("Transforming: order_reviews")
     df = spark.read.format("delta").load(f"{BRONZE_PATH}/order_reviews")
     return _write_silver(clean_order_reviews(df), "order_reviews")
 
@@ -249,19 +257,26 @@ def clean_customers(df: DataFrame) -> DataFrame:
     df = _trim_strings(df)
     df = df.dropDuplicates(["customer_id"])
 
-    df = _standardize_city(df, "customer_city")
-    df = df.withColumn("customer_state", F.upper(F.trim(F.col("customer_state"))))
+    # Standardize city: lowercase + remove extra spaces
+    df = df.withColumn("customer_city", F.lower(F.trim(F.col("customer_city"))))
+    df = df.withColumn("customer_city", F.regexp_replace(F.col("customer_city"), r"\s+", " "))
+
+    # Standardize state: uppercase
+    df = df.withColumn("customer_state", F.upper(F.col("customer_state")))
+
+    # Pad zip to 5 digits
+    df = df.withColumn("customer_zip_code_prefix",
+                       F.lpad(F.col("customer_zip_code_prefix"), 5, "0"))
+
+    # Add region from state
     df = _add_region(df, "customer_state")
-    df = df.withColumn(
-        "customer_zip_code_prefix",
-        F.lpad(F.col("customer_zip_code_prefix"), 5, "0"),
-    )
+
     return df
 
 
 def transform_customers(spark: SparkSession) -> int:
     """Read Bronze customers → clean → write Silver."""
-    print("\n🔄 Transforming: customers")
+    logger.info("Transforming: customers")
     df = spark.read.format("delta").load(f"{BRONZE_PATH}/customers")
     return _write_silver(clean_customers(df), "customers")
 
@@ -269,36 +284,36 @@ def transform_customers(spark: SparkSession) -> int:
 def clean_products(df: DataFrame) -> DataFrame:
     """Pure Silver transform for products.
 
-    Dedup on product_id, cast dimensions, derive weight_kg and volume_cm3,
-    fill null category with 'unknown'.
+    Dedup on product_id, cast numerics, derive weight_kg and volume_cm3,
+    fill null categories.
     """
     df = _drop_bronze_metadata(df)
     df = _trim_strings(df)
     df = df.dropDuplicates(["product_id"])
 
+    # Cast numeric columns
     numeric_cols = [
-        "product_name_lenght", "product_description_lenght",
-        "product_photos_qty", "product_weight_g",
-        "product_length_cm", "product_height_cm", "product_width_cm",
+        "product_name_lenght", "product_description_lenght", "product_photos_qty",
+        "product_weight_g", "product_length_cm", "product_height_cm", "product_width_cm",
     ]
     for col_name in numeric_cols:
         df = df.withColumn(col_name, F.col(col_name).cast(DoubleType()))
 
+    # Fill null category
+    df = df.withColumn("product_category_name",
+                       F.coalesce(F.col("product_category_name"), F.lit("unknown")))
+
+    # Derived columns
     df = df.withColumn("product_weight_kg", F.col("product_weight_g") / 1000.0)
-    df = df.withColumn(
-        "product_volume_cm3",
-        F.col("product_length_cm") * F.col("product_height_cm") * F.col("product_width_cm"),
-    )
-    df = df.withColumn(
-        "product_category_name",
-        F.coalesce(F.col("product_category_name"), F.lit("unknown")),
-    )
+    df = df.withColumn("product_volume_cm3",
+                       F.col("product_length_cm") * F.col("product_height_cm") * F.col("product_width_cm"))
+
     return df
 
 
 def transform_products(spark: SparkSession) -> int:
     """Read Bronze products → clean → write Silver."""
-    print("\n🔄 Transforming: products")
+    logger.info("Transforming: products")
     df = spark.read.format("delta").load(f"{BRONZE_PATH}/products")
     return _write_silver(clean_products(df), "products")
 
@@ -312,19 +327,20 @@ def clean_sellers(df: DataFrame) -> DataFrame:
     df = _trim_strings(df)
     df = df.dropDuplicates(["seller_id"])
 
-    df = _standardize_city(df, "seller_city")
-    df = df.withColumn("seller_state", F.upper(F.trim(F.col("seller_state"))))
+    df = df.withColumn("seller_city", F.lower(F.trim(F.col("seller_city"))))
+    df = df.withColumn("seller_city", F.regexp_replace(F.col("seller_city"), r"\s+", " "))
+    df = df.withColumn("seller_state", F.upper(F.col("seller_state")))
+    df = df.withColumn("seller_zip_code_prefix",
+                       F.lpad(F.col("seller_zip_code_prefix"), 5, "0"))
+
     df = _add_region(df, "seller_state")
-    df = df.withColumn(
-        "seller_zip_code_prefix",
-        F.lpad(F.col("seller_zip_code_prefix"), 5, "0"),
-    )
+
     return df
 
 
 def transform_sellers(spark: SparkSession) -> int:
     """Read Bronze sellers → clean → write Silver."""
-    print("\n🔄 Transforming: sellers")
+    logger.info("Transforming: sellers")
     df = spark.read.format("delta").load(f"{BRONZE_PATH}/sellers")
     return _write_silver(clean_sellers(df), "sellers")
 
@@ -332,34 +348,33 @@ def transform_sellers(spark: SparkSession) -> int:
 def clean_geolocation(df: DataFrame) -> DataFrame:
     """Pure Silver transform for geolocation.
 
-    Cast coordinates, standardize city/state, pad zip, then aggregate to one
-    row per zip prefix (avg lat/lng, first city/state) and add region.
+    Aggregate to one row per zip_code_prefix (avg lat/lng).
     """
     df = _drop_bronze_metadata(df)
     df = _trim_strings(df)
 
-    df = df.withColumn("geolocation_lat", F.col("geolocation_lat").cast(DoubleType()))
-    df = df.withColumn("geolocation_lng", F.col("geolocation_lng").cast(DoubleType()))
-    df = _standardize_city(df, "geolocation_city")
-    df = df.withColumn("geolocation_state", F.upper(F.trim(F.col("geolocation_state"))))
-    df = df.withColumn(
-        "geolocation_zip_code_prefix",
-        F.lpad(F.col("geolocation_zip_code_prefix"), 5, "0"),
+    # Aggregate: one row per zip with average coordinates
+    df = (
+        df
+        .groupBy("geolocation_zip_code_prefix")
+        .agg(
+            F.avg("geolocation_lat").alias("geolocation_lat"),
+            F.avg("geolocation_lng").alias("geolocation_lng"),
+            F.first("geolocation_city").alias("geolocation_city"),
+            F.first("geolocation_state").alias("geolocation_state"),
+        )
     )
 
-    df = df.groupBy("geolocation_zip_code_prefix").agg(
-        F.avg("geolocation_lat").alias("geolocation_lat"),
-        F.avg("geolocation_lng").alias("geolocation_lng"),
-        F.first("geolocation_city").alias("geolocation_city"),
-        F.first("geolocation_state").alias("geolocation_state"),
-    )
-    df = _add_region(df, "geolocation_state")
+    # Pad zip
+    df = df.withColumn("geolocation_zip_code_prefix",
+                       F.lpad(F.col("geolocation_zip_code_prefix"), 5, "0"))
+
     return df
 
 
 def transform_geolocation(spark: SparkSession) -> int:
-    """Read Bronze geolocation → clean (aggregate to zip) → write Silver."""
-    print("\n🔄 Transforming: geolocation")
+    """Read Bronze geolocation → clean → write Silver."""
+    logger.info("Transforming: geolocation")
     df = spark.read.format("delta").load(f"{BRONZE_PATH}/geolocation")
     return _write_silver(clean_geolocation(df), "geolocation")
 
@@ -367,33 +382,30 @@ def transform_geolocation(spark: SparkSession) -> int:
 def clean_category_translation(df: DataFrame) -> DataFrame:
     """Pure Silver transform for category_translation.
 
-    Dedup on product_category_name and lowercase both columns.
+    Just trim strings and dedup — this is a small reference table.
     """
     df = _drop_bronze_metadata(df)
     df = _trim_strings(df)
     df = df.dropDuplicates(["product_category_name"])
-
-    df = df.withColumn("product_category_name", F.lower(F.col("product_category_name")))
-    df = df.withColumn("product_category_name_english", F.lower(F.col("product_category_name_english")))
     return df
 
 
 def transform_category_translation(spark: SparkSession) -> int:
     """Read Bronze category_translation → clean → write Silver."""
-    print("\n🔄 Transforming: category_translation")
+    logger.info("Transforming: category_translation")
     df = spark.read.format("delta").load(f"{BRONZE_PATH}/category_translation")
     return _write_silver(clean_category_translation(df), "category_translation")
 
 
 # ============================================================
-# TRANSFORM ALL TABLES
+# TRANSFORM ALL
 # ============================================================
 def transform_all():
     """Run all Silver transformations."""
 
-    print("=" * 60)
-    print("SILVER LAYER — Full Transformation")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("SILVER LAYER — Full Transformation")
+    logger.info("=" * 60)
 
     spark = get_spark_session(app_name="Silver_Transform")
 
@@ -415,13 +427,16 @@ def transform_all():
         results[table_name] = count
 
     # --- Summary ---
-    print("\n" + "=" * 60)
-    print("SUMMARY")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("SUMMARY")
+    logger.info("=" * 60)
     for table, count in results.items():
-        print(f"   {table:25s} → {count:>10,} records")
-    print(f"\n   {'TOTAL':25s} → {sum(results.values()):>10,} records")
-    print("=" * 60)
+        logger.info(f"  {table:25s} → {count:>10,} records")
+    logger.info(f"  {'TOTAL':25s} → {sum(results.values()):>10,} records")
+    logger.info("=" * 60)
+
+    # Clean shutdown — release Spark resources
+    spark.stop()
 
     return results
 

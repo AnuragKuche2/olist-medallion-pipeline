@@ -23,6 +23,9 @@ from datetime import datetime
 from pyspark.sql import SparkSession, functions as F
 
 from src.utils.spark_session import get_spark_session
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 # ============================================================
@@ -71,30 +74,30 @@ class ValidationResult:
             self.failures += 1
 
     def summary(self):
-        print("\n" + "=" * 60)
-        print("DATA QUALITY REPORT")
-        print("=" * 60)
-        print(f"\n   ✅ Passed:   {self.passed}")
-        print(f"   ⚠️  Warnings: {self.warnings}")
-        print(f"   ❌ Failures: {self.failures}")
-        print(f"   📋 Total:    {len(self.checks)}")
-        print("\n" + "-" * 60)
+        logger.info("=" * 60)
+        logger.info("DATA QUALITY REPORT")
+        logger.info("=" * 60)
+        logger.info(f"  ✅ Passed:   {self.passed}")
+        logger.info(f"  ⚠️  Warnings: {self.warnings}")
+        logger.info(f"  ❌ Failures: {self.failures}")
+        logger.info(f"  📋 Total:    {len(self.checks)}")
+        logger.info("-" * 60)
 
         for check in self.checks:
             icon = {"PASS": "✅", "WARN": "⚠️ ", "FAIL": "❌"}[check["status"]]
             detail = f" — {check['detail']}" if check["detail"] else ""
-            print(f"   {icon} {check['check']}{detail}")
+            logger.info(f"  {icon} {check['check']}{detail}")
 
-        print("\n" + "=" * 60)
+        logger.info("=" * 60)
 
         if self.failures > 0:
-            print("   🚨 RESULT: CRITICAL FAILURES — investigate immediately")
+            logger.error("RESULT: CRITICAL FAILURES — investigate immediately")
             return 2
         elif self.warnings > 0:
-            print("   ⚠️  RESULT: PASSED WITH WARNINGS")
+            logger.warning("RESULT: PASSED WITH WARNINGS")
             return 1
         else:
-            print("   🎉 RESULT: ALL CHECKS PASSED")
+            logger.info("RESULT: ALL CHECKS PASSED")
             return 0
 
 
@@ -103,7 +106,7 @@ class ValidationResult:
 # ============================================================
 def check_row_counts(spark: SparkSession, results: ValidationResult):
     """Verify row counts are reasonable across layers."""
-    print("\n📊 Check: Row Count Reconciliation")
+    logger.info("Check: Row Count Reconciliation")
 
     counts = {}
 
@@ -168,7 +171,7 @@ def check_row_counts(spark: SparkSession, results: ValidationResult):
 # ============================================================
 def check_nulls(spark: SparkSession, results: ValidationResult):
     """Verify critical columns have acceptable null rates."""
-    print("\n🔍 Check: Null Percentages")
+    logger.info("Check: Null Percentages")
 
     # Critical columns that should have very low nulls
     critical_checks = [
@@ -211,7 +214,7 @@ def check_nulls(spark: SparkSession, results: ValidationResult):
 # ============================================================
 def check_referential_integrity(spark: SparkSession, results: ValidationResult):
     """Verify fact table keys exist in dimension tables."""
-    print("\n🔗 Check: Referential Integrity")
+    logger.info("Check: Referential Integrity")
 
     try:
         fact_orders = spark.read.format("delta").load(f"{GOLD_PATH}/fact_orders")
@@ -270,7 +273,7 @@ def check_referential_integrity(spark: SparkSession, results: ValidationResult):
 # ============================================================
 def check_value_ranges(spark: SparkSession, results: ValidationResult):
     """Verify values are within expected ranges."""
-    print("\n📏 Check: Value Ranges")
+    logger.info("Check: Value Ranges")
 
     try:
         # Prices should be > 0
@@ -329,7 +332,7 @@ def check_value_ranges(spark: SparkSession, results: ValidationResult):
 # ============================================================
 def check_uniqueness(spark: SparkSession, results: ValidationResult):
     """Verify primary keys are unique."""
-    print("\n🔑 Check: Primary Key Uniqueness")
+    logger.info("Check: Primary Key Uniqueness")
 
     pk_checks = [
         ("silver", "orders", "order_id"),
@@ -366,10 +369,10 @@ def check_uniqueness(spark: SparkSession, results: ValidationResult):
 def validate_all():
     """Run complete data quality validation suite."""
 
-    print("=" * 60)
-    print("DATA QUALITY VALIDATION")
-    print(f"Run time: {datetime.now().isoformat()}")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("DATA QUALITY VALIDATION")
+    logger.info(f"Run time: {datetime.now().isoformat()}")
+    logger.info("=" * 60)
 
     spark = get_spark_session(app_name="Quality_Validation")
     results = ValidationResult()
@@ -383,6 +386,10 @@ def validate_all():
 
     # Print report and exit with appropriate code
     exit_code = results.summary()
+
+    # Clean shutdown — release Spark resources
+    spark.stop()
+
     sys.exit(exit_code)
 
 

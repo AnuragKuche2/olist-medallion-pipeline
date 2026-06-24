@@ -38,15 +38,15 @@ from pyspark.sql.types import (
     StructType, StructField, StringType, IntegerType, DoubleType,
     TimestampType, LongType
 )
-import random
 
 from src.utils.spark_session import get_spark_session
+import os
 
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
-S3_BUCKET = "anukuche-olist-datalake"
+S3_BUCKET = os.environ.get("S3_BUCKET", "anukuche-olist-datalake")
 OUTPUT_PATH = f"s3a://{S3_BUCKET}/landing_synthetic"
 
 # Base counts (original Olist dataset)
