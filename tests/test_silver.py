@@ -10,7 +10,7 @@ actual codebase is caught by the test suite.
 import pytest
 from pyspark.sql import functions as F
 from pyspark.sql.types import (
-    StructType, StructField, StringType, DoubleType, IntegerType, TimestampType
+    StructType, StructField, StringType, DoubleType, TimestampType
 )
 
 # Import real functions under test
@@ -18,11 +18,45 @@ from src.silver.transform import (
     clean_orders,
     clean_customers,
     clean_products,
-    clean_sellers,
-    clean_order_items,
-    clean_order_payments,
-    clean_order_reviews,
 )
+
+# Explicit schema for orders tests (avoids NullType inference on nullable cols)
+_ORDERS_SCHEMA = StructType([
+    StructField("order_id", StringType(), True),
+    StructField("order_status", StringType(), True),
+    StructField("order_purchase_timestamp", StringType(), True),
+    StructField("order_approved_at", StringType(), True),
+    StructField("order_delivered_carrier_date", StringType(), True),
+    StructField("order_delivered_customer_date", StringType(), True),
+    StructField("order_estimated_delivery_date", StringType(), True),
+])
+
+# Explicit schema for orders with bronze metadata
+_ORDERS_WITH_META_SCHEMA = StructType([
+    StructField("order_id", StringType(), True),
+    StructField("order_status", StringType(), True),
+    StructField("order_purchase_timestamp", StringType(), True),
+    StructField("order_approved_at", StringType(), True),
+    StructField("order_delivered_carrier_date", StringType(), True),
+    StructField("order_delivered_customer_date", StringType(), True),
+    StructField("order_estimated_delivery_date", StringType(), True),
+    StructField("_ingestion_timestamp", StringType(), True),
+    StructField("_source_file", StringType(), True),
+    StructField("_batch_id", StringType(), True),
+])
+
+# Explicit schema for products (avoids NullType on product_category_name)
+_PRODUCTS_SCHEMA = StructType([
+    StructField("product_id", StringType(), True),
+    StructField("product_category_name", StringType(), True),
+    StructField("product_name_lenght", StringType(), True),
+    StructField("product_description_lenght", StringType(), True),
+    StructField("product_photos_qty", StringType(), True),
+    StructField("product_weight_g", StringType(), True),
+    StructField("product_length_cm", StringType(), True),
+    StructField("product_height_cm", StringType(), True),
+    StructField("product_width_cm", StringType(), True),
+])
 
 
 # ============================================================
@@ -38,11 +72,7 @@ class TestCleanOrders:
             ("order_1", "DELIVERED", "2018-01-01 10:00:00", None, None, "2018-01-08 14:00:00", "2018-01-10 00:00:00"),
             ("order_2", "SHIPPED", "2018-01-02 08:00:00", None, None, None, "2018-01-12 00:00:00"),
         ]
-        df = spark.createDataFrame(data, [
-            "order_id", "order_status", "order_purchase_timestamp",
-            "order_approved_at", "order_delivered_carrier_date",
-            "order_delivered_customer_date", "order_estimated_delivery_date",
-        ])
+        df = spark.createDataFrame(data, schema=_ORDERS_SCHEMA)
 
         result = clean_orders(df)
         assert result.count() == 2
@@ -53,11 +83,7 @@ class TestCleanOrders:
             ("order_1", "delivered", "2018-01-01 10:00:00", "2018-01-01 12:00:00",
              "2018-01-03 08:00:00", "2018-01-08 14:00:00", "2018-01-10 00:00:00"),
         ]
-        df = spark.createDataFrame(data, [
-            "order_id", "order_status", "order_purchase_timestamp",
-            "order_approved_at", "order_delivered_carrier_date",
-            "order_delivered_customer_date", "order_estimated_delivery_date",
-        ])
+        df = spark.createDataFrame(data, schema=_ORDERS_SCHEMA)
 
         result = clean_orders(df)
         assert result.schema["order_purchase_timestamp"].dataType == TimestampType()
@@ -68,11 +94,7 @@ class TestCleanOrders:
         data = [
             ("order_1", "delivered", "2018-01-01 10:00:00", None, None, "2018-01-08 14:00:00", "2018-01-10 00:00:00"),
         ]
-        df = spark.createDataFrame(data, [
-            "order_id", "order_status", "order_purchase_timestamp",
-            "order_approved_at", "order_delivered_carrier_date",
-            "order_delivered_customer_date", "order_estimated_delivery_date",
-        ])
+        df = spark.createDataFrame(data, schema=_ORDERS_SCHEMA)
 
         result = clean_orders(df)
         row = result.collect()[0]
@@ -84,11 +106,7 @@ class TestCleanOrders:
             ("order_1", "delivered", "2018-01-01 10:00:00", None, None, "2018-01-15 14:00:00", "2018-01-10 00:00:00"),
             ("order_2", "delivered", "2018-01-01 10:00:00", None, None, "2018-01-05 14:00:00", "2018-01-10 00:00:00"),
         ]
-        df = spark.createDataFrame(data, [
-            "order_id", "order_status", "order_purchase_timestamp",
-            "order_approved_at", "order_delivered_carrier_date",
-            "order_delivered_customer_date", "order_estimated_delivery_date",
-        ])
+        df = spark.createDataFrame(data, schema=_ORDERS_SCHEMA)
 
         result = clean_orders(df).orderBy("order_id")
         rows = result.collect()
@@ -100,11 +118,7 @@ class TestCleanOrders:
         data = [
             ("order_1", "DELIVERED", "2018-01-01 10:00:00", None, None, "2018-01-08 14:00:00", "2018-01-10 00:00:00"),
         ]
-        df = spark.createDataFrame(data, [
-            "order_id", "order_status", "order_purchase_timestamp",
-            "order_approved_at", "order_delivered_carrier_date",
-            "order_delivered_customer_date", "order_estimated_delivery_date",
-        ])
+        df = spark.createDataFrame(data, schema=_ORDERS_SCHEMA)
 
         result = clean_orders(df)
         assert result.collect()[0].order_status == "delivered"
@@ -115,12 +129,7 @@ class TestCleanOrders:
             ("order_1", "delivered", "2018-01-01 10:00:00", None, None, None, "2018-01-10 00:00:00",
              "2024-01-01T00:00:00", "file.csv", "batch-1"),
         ]
-        df = spark.createDataFrame(data, [
-            "order_id", "order_status", "order_purchase_timestamp",
-            "order_approved_at", "order_delivered_carrier_date",
-            "order_delivered_customer_date", "order_estimated_delivery_date",
-            "_ingestion_timestamp", "_source_file", "_batch_id",
-        ])
+        df = spark.createDataFrame(data, schema=_ORDERS_WITH_META_SCHEMA)
 
         result = clean_orders(df)
         assert "_ingestion_timestamp" not in result.columns
@@ -218,12 +227,7 @@ class TestCleanProducts:
             ("prod_1", "electronics", "30", "200", "3", "1500", "30", "20", "15"),
             ("prod_2", "furniture", "20", "100", "2", "5000", "50", "40", "30"),
         ]
-        df = spark.createDataFrame(data, [
-            "product_id", "product_category_name",
-            "product_name_lenght", "product_description_lenght",
-            "product_photos_qty", "product_weight_g",
-            "product_length_cm", "product_height_cm", "product_width_cm",
-        ])
+        df = spark.createDataFrame(data, schema=_PRODUCTS_SCHEMA)
 
         result = clean_products(df)
         assert result.count() == 2
@@ -233,12 +237,7 @@ class TestCleanProducts:
         data = [
             ("prod_1", "electronics", "30", "200", "3", "1500", "30", "20", "15"),
         ]
-        df = spark.createDataFrame(data, [
-            "product_id", "product_category_name",
-            "product_name_lenght", "product_description_lenght",
-            "product_photos_qty", "product_weight_g",
-            "product_length_cm", "product_height_cm", "product_width_cm",
-        ])
+        df = spark.createDataFrame(data, schema=_PRODUCTS_SCHEMA)
 
         result = clean_products(df)
         assert result.collect()[0].product_weight_kg == 1.5
@@ -248,12 +247,7 @@ class TestCleanProducts:
         data = [
             ("prod_1", "electronics", "30", "200", "3", "1500", "10", "20", "30"),
         ]
-        df = spark.createDataFrame(data, [
-            "product_id", "product_category_name",
-            "product_name_lenght", "product_description_lenght",
-            "product_photos_qty", "product_weight_g",
-            "product_length_cm", "product_height_cm", "product_width_cm",
-        ])
+        df = spark.createDataFrame(data, schema=_PRODUCTS_SCHEMA)
 
         result = clean_products(df)
         assert result.collect()[0].product_volume_cm3 == 6000.0
@@ -263,12 +257,7 @@ class TestCleanProducts:
         data = [
             ("prod_1", None, "30", "200", "3", "1500", "10", "20", "30"),
         ]
-        df = spark.createDataFrame(data, [
-            "product_id", "product_category_name",
-            "product_name_lenght", "product_description_lenght",
-            "product_photos_qty", "product_weight_g",
-            "product_length_cm", "product_height_cm", "product_width_cm",
-        ])
+        df = spark.createDataFrame(data, schema=_PRODUCTS_SCHEMA)
 
         result = clean_products(df)
         assert result.collect()[0].product_category_name == "unknown"
@@ -278,12 +267,7 @@ class TestCleanProducts:
         data = [
             ("prod_1", "electronics", "30", "200", "3", "1500", "10", "20", "30"),
         ]
-        df = spark.createDataFrame(data, [
-            "product_id", "product_category_name",
-            "product_name_lenght", "product_description_lenght",
-            "product_photos_qty", "product_weight_g",
-            "product_length_cm", "product_height_cm", "product_width_cm",
-        ])
+        df = spark.createDataFrame(data, schema=_PRODUCTS_SCHEMA)
 
         result = clean_products(df)
         assert result.schema["product_weight_g"].dataType == DoubleType()
