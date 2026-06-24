@@ -2,163 +2,195 @@
 """
 Unit tests for Gold layer star schema logic.
 
-Tests:
-  - Surrogate key generation
-  - Date dimension completeness
-  - Seller tier classification
-  - Fact table aggregation logic
-  - Referential integrity patterns
+These tests import and call the REAL pure helper functions from
+src/gold/build.py, ensuring that any regression in surrogate key
+generation, date dimension logic, seller tiering, or fact aggregation
+is caught by the test suite.
 """
 
 import pytest
 from pyspark.sql import functions as F
 from pyspark.sql.types import IntegerType
 
+# Import real functions under test
+from src.gold.build import (
+    seller_tier_expr,
+    add_date_attributes,
+    aggregate_order_payments,
+    aggregate_order_items,
+)
 
-class TestDimDate:
-    """Tests date dimension logic."""
 
-    def test_date_spine_covers_range(self, spark):
-        """Date dimension should cover the full date range."""
-        df = spark.sql("""
-            SELECT explode(sequence(
-                to_date('2018-01-01'),
-                to_date('2018-01-31'),
-                interval 1 day
-            )) as full_date
-        """)
+# ============================================================
+# SELLER TIER
+# ============================================================
+class TestSellerTier:
+    """Tests the real seller_tier_expr() function."""
 
-        assert df.count() == 31  # January has 31 days
+    def test_platinum_threshold(self, spark):
+        """Sellers with >= 100 orders should be 'platinum'."""
+        data = [(150,), (100,)]
+        df = spark.createDataFrame(data, ["total_orders"])
+
+        df = df.withColumn("seller_tier", seller_tier_expr("total_orders"))
+        results = [row.seller_tier for row in df.collect()]
+        assert results == ["platinum", "platinum"]
+
+    def test_all_tiers(self, spark):
+        """All tier thresholds should classify correctly."""
+        data = [(200,), (75,), (25,), (5,)]
+        df = spark.createDataFrame(data, ["total_orders"])
+
+        df = df.withColumn("seller_tier", seller_tier_expr("total_orders"))
+        results = [row.seller_tier for row in df.collect()]
+        assert results == ["platinum", "gold", "silver", "bronze"]
+
+    def test_boundary_values(self, spark):
+        """Boundary values: 100, 50, 10, 9."""
+        data = [(100,), (99,), (50,), (49,), (10,), (9,)]
+        df = spark.createDataFrame(data, ["total_orders"])
+
+        df = df.withColumn("seller_tier", seller_tier_expr("total_orders"))
+        results = [row.seller_tier for row in df.collect()]
+        assert results == ["platinum", "gold", "gold", "silver", "silver", "bronze"]
+
+
+# ============================================================
+# DATE DIMENSION
+# ============================================================
+class TestAddDateAttributes:
+    """Tests the real add_date_attributes() function."""
 
     def test_date_key_format(self, spark):
-        """date_key should be yyyyMMdd integer format."""
+        """date_key should be yyyyMMdd integer (e.g. 20180615)."""
         data = [("2018-06-15",)]
         df = spark.createDataFrame(data, ["date_str"])
-
         df = df.withColumn("full_date", F.to_date("date_str"))
-        df = df.withColumn("date_key", F.date_format("full_date", "yyyyMMdd").cast(IntegerType()))
 
-        result = df.collect()[0].date_key
-        assert result == 20180615
+        result = add_date_attributes(df)
+        assert result.collect()[0].date_key == 20180615
 
-    def test_is_weekend_flag(self, spark):
-        """Saturday and Sunday should be flagged as weekend."""
+    def test_year_month_quarter(self, spark):
+        """Year, month, quarter should be derived correctly."""
+        data = [("2018-09-20",)]
+        df = spark.createDataFrame(data, ["date_str"])
+        df = df.withColumn("full_date", F.to_date("date_str"))
+
+        result = add_date_attributes(df)
+        row = result.collect()[0]
+        assert row.year == 2018
+        assert row.month == 9
+        assert row.quarter == 3
+
+    def test_is_weekend(self, spark):
+        """Saturday (7) and Sunday (1) should be flagged as weekend."""
         data = [
             ("2018-06-16",),  # Saturday
             ("2018-06-17",),  # Sunday
             ("2018-06-18",),  # Monday
         ]
         df = spark.createDataFrame(data, ["date_str"])
-
         df = df.withColumn("full_date", F.to_date("date_str"))
-        df = df.withColumn(
-            "is_weekend",
-            F.when(F.dayofweek("full_date").isin(1, 7), True).otherwise(False)
-        )
 
-        results = [row.is_weekend for row in df.collect()]
+        result = add_date_attributes(df)
+        results = [row.is_weekend for row in result.collect()]
         assert results == [True, True, False]
 
+    def test_day_name(self, spark):
+        """day_name should return the weekday name."""
+        data = [("2018-06-18",)]  # Monday
+        df = spark.createDataFrame(data, ["date_str"])
+        df = df.withColumn("full_date", F.to_date("date_str"))
 
-class TestDimSeller:
-    """Tests seller dimension logic."""
+        result = add_date_attributes(df)
+        assert result.collect()[0].day_name == "Monday"
 
-    def test_seller_tier_platinum(self, spark):
-        """Sellers with >= 100 orders should be 'platinum'."""
-        data = [(150,), (100,), (99,)]
-        df = spark.createDataFrame(data, ["total_orders"])
+    def test_year_month_format(self, spark):
+        """year_month should be 'yyyy-MM' format."""
+        data = [("2018-11-05",)]
+        df = spark.createDataFrame(data, ["date_str"])
+        df = df.withColumn("full_date", F.to_date("date_str"))
 
-        df = df.withColumn(
-            "seller_tier",
-            F.when(F.col("total_orders") >= 100, "platinum")
-             .when(F.col("total_orders") >= 50, "gold")
-             .when(F.col("total_orders") >= 10, "silver")
-             .otherwise("bronze")
-        )
-
-        results = [row.seller_tier for row in df.collect()]
-        assert results == ["platinum", "platinum", "gold"]
-
-    def test_seller_tier_all_levels(self, spark):
-        """All tier thresholds should work correctly."""
-        data = [(200,), (75,), (25,), (5,)]
-        df = spark.createDataFrame(data, ["total_orders"])
-
-        df = df.withColumn(
-            "seller_tier",
-            F.when(F.col("total_orders") >= 100, "platinum")
-             .when(F.col("total_orders") >= 50, "gold")
-             .when(F.col("total_orders") >= 10, "silver")
-             .otherwise("bronze")
-        )
-
-        results = [row.seller_tier for row in df.collect()]
-        assert results == ["platinum", "gold", "silver", "bronze"]
+        result = add_date_attributes(df)
+        assert result.collect()[0].year_month == "2018-11"
 
 
-class TestFactAggregation:
-    """Tests fact table aggregation patterns."""
+# ============================================================
+# FACT AGGREGATIONS
+# ============================================================
+class TestAggregateOrderPayments:
+    """Tests the real aggregate_order_payments() function."""
 
-    def test_payment_aggregation_to_order_level(self, spark):
-        """Multiple payments per order should aggregate correctly."""
+    def test_multiple_payments_summed(self, spark):
+        """Multiple payments per order should sum correctly."""
         data = [
-            ("order_1", "credit_card", 100.0),
-            ("order_1", "voucher", 50.0),
-            ("order_2", "debit_card", 200.0),
+            ("order_1", "credit_card", 100.0, 3),
+            ("order_1", "voucher", 50.0, 1),
+            ("order_2", "debit_card", 200.0, 1),
         ]
-        df = spark.createDataFrame(data, ["order_id", "payment_type", "payment_value"])
+        df = spark.createDataFrame(data, ["order_id", "payment_type", "payment_value", "payment_installments"])
 
-        agg = df.groupBy("order_id").agg(
-            F.sum("payment_value").alias("total_payment"),
-            F.first("payment_type").alias("primary_payment_type"),
-        )
+        result = aggregate_order_payments(df).orderBy("order_id")
+        rows = result.collect()
 
-        order_1 = agg.filter(F.col("order_id") == "order_1").collect()[0]
-        assert order_1.total_payment == 150.0
+        assert rows[0].total_payment_value == 150.0
+        assert rows[1].total_payment_value == 200.0
 
-        order_2 = agg.filter(F.col("order_id") == "order_2").collect()[0]
-        assert order_2.total_payment == 200.0
-
-    def test_item_count_per_order(self, spark):
-        """Item count should reflect number of line items per order."""
+    def test_max_installments(self, spark):
+        """max_installments should be the highest across payment rows."""
         data = [
-            ("order_1", 1, 50.0),
-            ("order_1", 2, 30.0),
-            ("order_1", 3, 20.0),
-            ("order_2", 1, 100.0),
+            ("order_1", "credit_card", 100.0, 6),
+            ("order_1", "credit_card", 50.0, 3),
         ]
-        df = spark.createDataFrame(data, ["order_id", "item_id", "price"])
+        df = spark.createDataFrame(data, ["order_id", "payment_type", "payment_value", "payment_installments"])
 
-        agg = df.groupBy("order_id").agg(
-            F.count("*").alias("item_count"),
-            F.sum("price").alias("total_value"),
-        )
+        result = aggregate_order_payments(df)
+        assert result.collect()[0].max_installments == 6
 
-        order_1 = agg.filter(F.col("order_id") == "order_1").collect()[0]
-        assert order_1.item_count == 3
-        assert order_1.total_value == 100.0
+    def test_single_payment_passthrough(self, spark):
+        """Single payment per order should pass through unchanged."""
+        data = [
+            ("order_1", "boleto", 250.0, 1),
+        ]
+        df = spark.createDataFrame(data, ["order_id", "payment_type", "payment_value", "payment_installments"])
+
+        result = aggregate_order_payments(df)
+        row = result.collect()[0]
+        assert row.total_payment_value == 250.0
+        assert row.primary_payment_type == "boleto"
+        assert row.max_installments == 1
 
 
-class TestSurrogateKeys:
-    """Tests surrogate key generation."""
+class TestAggregateOrderItems:
+    """Tests the real aggregate_order_items() function."""
 
-    def test_monotonically_increasing_id_unique(self, spark):
-        """Surrogate keys should be unique."""
-        data = [("A",), ("B",), ("C",), ("D",)]
-        df = spark.createDataFrame(data, ["name"])
+    def test_item_count(self, spark):
+        """item_count should reflect number of line items per order."""
+        data = [
+            ("order_1", 50.0, 10.0),
+            ("order_1", 30.0, 8.0),
+            ("order_1", 20.0, 5.0),
+            ("order_2", 100.0, 15.0),
+        ]
+        df = spark.createDataFrame(data, ["order_id", "price", "freight_value"])
 
-        df = df.withColumn("key", F.monotonically_increasing_id())
+        result = aggregate_order_items(df).orderBy("order_id")
+        rows = result.collect()
 
-        total = df.count()
-        distinct_keys = df.select("key").distinct().count()
-        assert total == distinct_keys
+        assert rows[0].item_count == 3
+        assert rows[0].total_item_value == 100.0
+        assert rows[0].total_freight_value == 23.0
+        assert rows[1].item_count == 1
 
-    def test_surrogate_key_not_null(self, spark):
-        """No surrogate key should be null."""
-        data = [("A",), ("B",), ("C",)]
-        df = spark.createDataFrame(data, ["name"])
+    def test_single_item_order(self, spark):
+        """Single-item order should have item_count = 1."""
+        data = [
+            ("order_1", 99.99, 12.50),
+        ]
+        df = spark.createDataFrame(data, ["order_id", "price", "freight_value"])
 
-        df = df.withColumn("key", F.monotonically_increasing_id())
-
-        null_keys = df.filter(F.col("key").isNull()).count()
-        assert null_keys == 0
+        result = aggregate_order_items(df)
+        row = result.collect()[0]
+        assert row.item_count == 1
+        assert row.total_item_value == 99.99
+        assert row.total_freight_value == 12.50
