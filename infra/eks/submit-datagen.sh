@@ -5,7 +5,7 @@
 # Prerequisites:
 #   1. EKS cluster running: eksctl create cluster -f cluster-config.yaml
 #   2. RBAC applied: kubectl apply -f spark-rbac.yaml
-#   3. Docker image pushed to ECR: 025078772864.dkr.ecr.us-west-2.amazonaws.com/olist-spark:3.5.0
+#   3. Docker image pushed to ECR: <account-id>.dkr.ecr.<region>.amazonaws.com/olist-spark:3.5.0
 #   4. IAM role created: olist-spark-eks-role (with S3 full access)
 #
 # Usage: bash submit-datagen.sh [scale_factor]
@@ -13,7 +13,11 @@
 set -e
 
 SCALE=${1:-1000}
-SPARK_IMAGE="025078772864.dkr.ecr.us-west-2.amazonaws.com/olist-spark:3.5.0"
+# Account ID and region are resolved dynamically from your AWS credentials.
+# Override by exporting AWS_ACCOUNT_ID / AWS_REGION before running this script.
+ACCOUNT_ID="${AWS_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text)}"
+REGION="${AWS_REGION:-us-west-2}"
+SPARK_IMAGE="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/olist-spark:3.5.0"
 K8S_MASTER=$(kubectl cluster-info | grep "Kubernetes control plane" | awk '{print $NF}')
 NAMESPACE="spark"
 SERVICE_ACCOUNT="spark-sa"

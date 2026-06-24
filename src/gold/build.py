@@ -8,7 +8,8 @@ Transforms Silver → Gold with a dimensional model:
 
 Design choices:
   - Star schema (not snowflake): fewer joins, small dims, BI-optimized
-  - Surrogate keys: monotonically_increasing_id for dim tables
+  - Surrogate keys: deterministic xxhash64 of each dimension's natural key
+    (stable across rebuilds; previously monotonically_increasing_id)
   - Pre-aggregations in fact tables for faster queries
   - Conformed dimensions: reusable across fact tables
 
@@ -32,6 +33,63 @@ SILVER_FOLDER = os.environ.get("SILVER_FOLDER", "silver")
 GOLD_FOLDER = os.environ.get("GOLD_FOLDER", "gold")
 SILVER_PATH = f"s3a://{S3_BUCKET}/{SILVER_FOLDER}"
 GOLD_PATH = f"s3a://{S3_BUCKET}/{GOLD_FOLDER}"
+
+
+# ============================================================
+# PURE HELPERS (no I/O — unit-testable)
+# ============================================================
+def seller_tier_expr(orders_col: str = "total_orders"):
+    """Return the Column expression that classifies a seller into a tier."""
+    return (
+        F.when(F.col(orders_col) >= 100, "platinum")
+         .when(F.col(orders_col) >= 50, "gold")
+         .when(F.col(orders_col) >= 10, "silver")
+         .otherwise("bronze")
+    )
+
+
+def add_date_attributes(df: DataFrame, date_col: str = "full_date") -> DataFrame:
+    """Add all date-dimension attribute columns derived from `date_col`."""
+    return (
+        df
+        .withColumn("date_key", F.date_format(date_col, "yyyyMMdd").cast(IntegerType()))
+        .withColumn("year", F.year(date_col))
+        .withColumn("quarter", F.quarter(date_col))
+        .withColumn("month", F.month(date_col))
+        .withColumn("month_name", F.date_format(date_col, "MMMM"))
+        .withColumn("day_of_month", F.dayofmonth(date_col))
+        .withColumn("day_of_week", F.dayofweek(date_col))
+        .withColumn("day_name", F.date_format(date_col, "EEEE"))
+        .withColumn("week_of_year", F.weekofyear(date_col))
+        .withColumn("is_weekend", F.when(F.dayofweek(date_col).isin(1, 7), True).otherwise(False))
+        .withColumn("year_month", F.date_format(date_col, "yyyy-MM"))
+    )
+
+
+def aggregate_order_payments(payments: DataFrame) -> DataFrame:
+    """Aggregate payment rows to one row per order."""
+    return (
+        payments
+        .groupBy("order_id")
+        .agg(
+            F.sum("payment_value").alias("total_payment_value"),
+            F.first("payment_type").alias("primary_payment_type"),
+            F.max("payment_installments").alias("max_installments"),
+        )
+    )
+
+
+def aggregate_order_items(items: DataFrame) -> DataFrame:
+    """Aggregate order-item rows to one row per order."""
+    return (
+        items
+        .groupBy("order_id")
+        .agg(
+            F.sum("price").alias("total_item_value"),
+            F.sum("freight_value").alias("total_freight_value"),
+            F.count("*").alias("item_count"),
+        )
+    )
 
 
 # ============================================================
@@ -64,20 +122,7 @@ def build_dim_date(spark: SparkSession) -> int:
     """)
 
     # Build date attributes
-    df = (
-        df
-        .withColumn("date_key", F.date_format("full_date", "yyyyMMdd").cast(IntegerType()))
-        .withColumn("year", F.year("full_date"))
-        .withColumn("quarter", F.quarter("full_date"))
-        .withColumn("month", F.month("full_date"))
-        .withColumn("month_name", F.date_format("full_date", "MMMM"))
-        .withColumn("day_of_month", F.dayofmonth("full_date"))
-        .withColumn("day_of_week", F.dayofweek("full_date"))
-        .withColumn("day_name", F.date_format("full_date", "EEEE"))
-        .withColumn("week_of_year", F.weekofyear("full_date"))
-        .withColumn("is_weekend", F.when(F.dayofweek("full_date").isin(1, 7), True).otherwise(False))
-        .withColumn("year_month", F.date_format("full_date", "yyyy-MM"))
-    )
+    df = add_date_attributes(df, "full_date")
 
     df.write.format("delta").mode("overwrite").save(f"{GOLD_PATH}/dim_date")
 
@@ -100,7 +145,10 @@ def build_dim_customer(spark: SparkSession) -> int:
 
     df = (
         df
-        .withColumn("customer_key", F.monotonically_increasing_id())
+        # Deterministic surrogate key: stable across rebuilds (hash of the
+        # natural key) instead of monotonically_increasing_id(), which changed
+        # every run and would break incremental loads / SCD / BI bookmarks.
+        .withColumn("customer_key", F.xxhash64(F.col("customer_unique_id")))
         .select(
             "customer_key",
             "customer_unique_id",
@@ -137,7 +185,8 @@ def build_dim_product(spark: SparkSession) -> int:
 
     df = (
         df
-        .withColumn("product_key", F.monotonically_increasing_id())
+        # Deterministic surrogate key (stable across rebuilds)
+        .withColumn("product_key", F.xxhash64(F.col("product_id")))
         .select(
             "product_key",
             "product_id",
@@ -194,17 +243,12 @@ def build_dim_seller(spark: SparkSession) -> int:
     )
 
     # Add seller tier based on order volume
-    df = df.withColumn(
-        "seller_tier",
-        F.when(F.col("total_orders") >= 100, "platinum")
-         .when(F.col("total_orders") >= 50, "gold")
-         .when(F.col("total_orders") >= 10, "silver")
-         .otherwise("bronze")
-    )
+    df = df.withColumn("seller_tier", seller_tier_expr("total_orders"))
 
     df = (
         df
-        .withColumn("seller_key", F.monotonically_increasing_id())
+        # Deterministic surrogate key (stable across rebuilds)
+        .withColumn("seller_key", F.xxhash64(F.col("seller_id")))
         .select(
             "seller_key",
             "seller_id",
@@ -236,7 +280,8 @@ def build_dim_geography(spark: SparkSession) -> int:
 
     df = (
         geo
-        .withColumn("geo_key", F.monotonically_increasing_id())
+        # Deterministic surrogate key (stable across rebuilds)
+        .withColumn("geo_key", F.xxhash64(F.col("geolocation_zip_code_prefix")))
         .select(
             "geo_key",
             F.col("geolocation_zip_code_prefix").alias("zip_code_prefix"),
@@ -277,26 +322,10 @@ def build_fact_orders(spark: SparkSession) -> int:
     dim_customer = spark.read.format("delta").load(f"{GOLD_PATH}/dim_customer")
 
     # Aggregate payments to order level
-    order_payments = (
-        payments
-        .groupBy("order_id")
-        .agg(
-            F.sum("payment_value").alias("total_payment_value"),
-            F.first("payment_type").alias("primary_payment_type"),
-            F.max("payment_installments").alias("max_installments"),
-        )
-    )
+    order_payments = aggregate_order_payments(payments)
 
     # Aggregate items to order level
-    order_items_agg = (
-        items
-        .groupBy("order_id")
-        .agg(
-            F.sum("price").alias("total_item_value"),
-            F.sum("freight_value").alias("total_freight_value"),
-            F.count("*").alias("item_count"),
-        )
-    )
+    order_items_agg = aggregate_order_items(items)
 
     # Get review score per order
     order_reviews = reviews.select("order_id", "review_score")

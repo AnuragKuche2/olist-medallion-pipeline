@@ -1,0 +1,86 @@
+# ============================================================
+# Python
+# ============================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# ============================================================
+# Secrets / credentials — NEVER commit these
+# ============================================================
+.env
+.env.*
+*.pem
+*.key
+credentials
+credentials.json
+aws.json
+.aws/
+
+# ============================================================
+# Spark / Delta / Hive local artifacts
+# ============================================================
+spark-warehouse/
+metastore_db/
+derby.log
+*.crc
+.spark-staging/
+
+# ============================================================
+# dbt
+# ============================================================
+dbt_project/target/
+dbt_project/dbt_packages/
+dbt_project/logs/
+.user.yml
+
+# ============================================================
+# Airflow (when run locally)
+# ============================================================
+airflow.db
+airflow.cfg
+airflow-webserver.pid
+logs/
+standalone_admin_password.txt
+
+# ============================================================
+# Test / coverage
+# ============================================================
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+
+# ============================================================
+# IDE / OS
+# ============================================================
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# ============================================================
+# Local data — do not commit generated datasets
+# ============================================================
+*.csv
+data/
+landing/
+landing_synthetic/
+
+# ...but DO track dbt seed files (they are meant to be version-controlled)
+!dbt_project/seeds/**/*.csv

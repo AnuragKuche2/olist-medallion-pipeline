@@ -101,12 +101,20 @@ with DAG(
                "and 2 fact tables optimized for analytical queries.",
     )
 
-    # --- Data Quality Check (placeholder) ---
+    # --- Data Quality Check ---
+    # validate.py exits 0 = all pass, 1 = warnings (non-fatal), 2 = critical
+    # failures. We fail the task only on critical failures (exit >= 2) so that
+    # benign warnings don't block the pipeline, but data-integrity problems do.
     quality_check = BashOperator(
         task_id="quality_check",
-        bash_command=f"{SPARK_ENV} && cd {PROJECT_DIR} && python3 -m src.quality.validate || true",
-        doc_md="Run data quality validations. Currently a placeholder — "
-               "will be implemented with Great Expectations or custom checks.",
+        bash_command=(
+            f"{SPARK_ENV} && cd {PROJECT_DIR} && "
+            f"python3 -m src.quality.validate; ec=$?; "
+            f"if [ $ec -ge 2 ]; then exit $ec; fi"
+        ),
+        doc_md="Run the data quality validation suite (src.quality.validate). "
+               "Fails the pipeline on critical failures (exit code >= 2); "
+               "warnings (exit code 1) pass but are surfaced in the logs.",
     )
 
     # --- End ---

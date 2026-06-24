@@ -1,0 +1,17 @@
+# requirements.txt — Olist Medallion Pipeline
+# Python 3.9+ required.
+#
+# Install with:
+#   pip3 install --user -r requirements.txt
+#
+# NOTE: Apache Airflow is intentionally NOT listed here. It has strict
+# transitive dependency requirements and must be installed with its official
+# constraints file (see airflow_setup.sh). Installing it alongside these
+# packages without constraints can break the environment.
+
+# --- Core processing ---
+pyspark==3.5.0
+delta-spark==3.1.0
+
+# --- Testing ---
+pytest==7.4.4

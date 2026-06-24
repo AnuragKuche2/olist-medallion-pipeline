@@ -23,8 +23,10 @@
 
 set -e
 
-ACCOUNT_ID="025078772864"
-REGION="us-west-2"
+# Account ID is resolved dynamically from your AWS credentials.
+# Override by exporting AWS_ACCOUNT_ID before running this script.
+ACCOUNT_ID="${AWS_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text)}"
+REGION="${AWS_REGION:-us-west-2}"
 CLUSTER_NAME="olist-spark-cluster"
 ECR_REPO="olist-spark"
 IAM_ROLE="olist-spark-eks-role"
@@ -106,7 +108,8 @@ echo ""
 # Step 4: Apply Kubernetes RBAC
 # -----------------------------------------------
 echo "⚙️  Step 4: Applying RBAC..."
-kubectl apply -f spark-rbac.yaml
+# Inject the resolved account ID into the IRSA role ARN placeholder before applying
+sed "s|\${ACCOUNT_ID}|${ACCOUNT_ID}|g" spark-rbac.yaml | kubectl apply -f -
 
 echo "   ✅ Namespace: ${NAMESPACE}, ServiceAccount: spark-sa"
 echo ""

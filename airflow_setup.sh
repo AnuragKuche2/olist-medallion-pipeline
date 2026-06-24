@@ -49,13 +49,23 @@ sed -i "s|load_examples = .*|load_examples = False|" $AIRFLOW_HOME/airflow.cfg
 # --- Create Admin User ---
 echo ""
 echo "👤 Creating admin user..."
+
+# Credentials are configurable via environment variables.
+# If AIRFLOW_ADMIN_PASSWORD is not set, a strong random one is generated and
+# printed once below — store it in a password manager, it is not saved anywhere.
+ADMIN_USERNAME="${AIRFLOW_ADMIN_USERNAME:-admin}"
+ADMIN_EMAIL="${AIRFLOW_ADMIN_EMAIL:-admin@example.com}"
+ADMIN_FIRSTNAME="${AIRFLOW_ADMIN_FIRSTNAME:-Admin}"
+ADMIN_LASTNAME="${AIRFLOW_ADMIN_LASTNAME:-User}"
+ADMIN_PASSWORD="${AIRFLOW_ADMIN_PASSWORD:-$(openssl rand -base64 18)}"
+
 ~/.local/bin/airflow users create \
-    --username admin \
-    --firstname Anurag \
-    --lastname Kuche \
+    --username "${ADMIN_USERNAME}" \
+    --firstname "${ADMIN_FIRSTNAME}" \
+    --lastname "${ADMIN_LASTNAME}" \
     --role Admin \
-    --email anukuche@amazon.com \
-    --password admin123
+    --email "${ADMIN_EMAIL}" \
+    --password "${ADMIN_PASSWORD}"
 
 echo ""
 echo "============================================"
@@ -70,7 +80,10 @@ echo "    ~/.local/bin/airflow scheduler -D"
 echo "    ~/.local/bin/airflow webserver -p 8080 -D"
 echo ""
 echo "  Web UI: http://localhost:8080"
-echo "  Login:  admin / admin123"
+echo "  Login:  ${ADMIN_USERNAME} / ${ADMIN_PASSWORD}"
+echo ""
+echo "  ⚠️  Save the password above now — it is not stored anywhere."
+echo "     To set your own next time, export AIRFLOW_ADMIN_PASSWORD before running."
 echo ""
 echo "  To trigger the pipeline manually:"
 echo "    ~/.local/bin/airflow dags trigger olist_medallion_pipeline"

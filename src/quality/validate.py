@@ -18,6 +18,7 @@ Phase 2: Migrate to Great Expectations for richer validation + docs.
 """
 
 import sys
+import os
 from datetime import datetime
 from pyspark.sql import SparkSession, functions as F
 
@@ -27,10 +28,23 @@ from src.utils.spark_session import get_spark_session
 # ============================================================
 # CONFIGURATION
 # ============================================================
-S3_BUCKET = "anukuche-olist-datalake"
-BRONZE_PATH = f"s3a://{S3_BUCKET}/bronze"
-SILVER_PATH = f"s3a://{S3_BUCKET}/silver"
-GOLD_PATH = f"s3a://{S3_BUCKET}/gold"
+# Mirror the env-var configuration used by the ingest/transform/build modules
+# so validation can run against synthetic (or any) folders, not just prod.
+S3_BUCKET = os.environ.get("S3_BUCKET", "anukuche-olist-datalake")
+BRONZE_FOLDER = os.environ.get("BRONZE_FOLDER", "bronze")
+SILVER_FOLDER = os.environ.get("SILVER_FOLDER", "silver")
+GOLD_FOLDER = os.environ.get("GOLD_FOLDER", "gold")
+BRONZE_PATH = f"s3a://{S3_BUCKET}/{BRONZE_FOLDER}"
+SILVER_PATH = f"s3a://{S3_BUCKET}/{SILVER_FOLDER}"
+GOLD_PATH = f"s3a://{S3_BUCKET}/{GOLD_FOLDER}"
+
+# Map a logical layer name to its (env-aware) base path.
+_LAYER_PATHS = {"bronze": BRONZE_PATH, "silver": SILVER_PATH, "gold": GOLD_PATH}
+
+
+def _layer_path(layer: str, table: str) -> str:
+    """Resolve a layer/table to its configured S3 path."""
+    return f"{_LAYER_PATHS[layer]}/{table}"
 
 # Thresholds
 MAX_NULL_PERCENT = 5.0  # Critical columns: max 5% nulls
@@ -174,7 +188,7 @@ def check_nulls(spark: SparkSession, results: ValidationResult):
 
     for layer, table, column in critical_checks:
         try:
-            path = f"s3a://{S3_BUCKET}/{layer}/{table}"
+            path = _layer_path(layer, table)
             df = spark.read.format("delta").load(path)
             total = df.count()
             null_count = df.filter(F.col(column).isNull()).count()
@@ -331,7 +345,7 @@ def check_uniqueness(spark: SparkSession, results: ValidationResult):
 
     for layer, table, pk_col in pk_checks:
         try:
-            path = f"s3a://{S3_BUCKET}/{layer}/{table}"
+            path = _layer_path(layer, table)
             df = spark.read.format("delta").load(path)
             total = df.count()
             distinct = df.select(pk_col).distinct().count()

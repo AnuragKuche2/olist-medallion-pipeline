@@ -2,8 +2,9 @@
 # Custom Spark image with Delta Lake + project code
 #
 # Build: docker build -t olist-spark:3.5.0 .
-# Push:  docker tag olist-spark:3.5.0 025078772864.dkr.ecr.us-west-2.amazonaws.com/olist-spark:3.5.0
-#        docker push 025078772864.dkr.ecr.us-west-2.amazonaws.com/olist-spark:3.5.0
+# Push:  ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+#        docker tag olist-spark:3.5.0 ${ACCOUNT_ID}.dkr.ecr.<region>.amazonaws.com/olist-spark:3.5.0
+#        docker push ${ACCOUNT_ID}.dkr.ecr.<region>.amazonaws.com/olist-spark:3.5.0
 
 FROM apache/spark:3.5.0
 

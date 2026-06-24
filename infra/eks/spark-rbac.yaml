@@ -15,8 +15,11 @@ metadata:
   name: spark-sa
   namespace: spark
   annotations:
-    # IRSA — links K8s service account to IAM role for S3 access
-    eks.amazonaws.com/role-arn: arn:aws:iam::025078772864:role/olist-spark-eks-role
+    # IRSA — links K8s service account to IAM role for S3 access.
+    # ${ACCOUNT_ID} is substituted at apply time by setup-eks.sh.
+    # If applying manually, run:
+    #   sed "s|\${ACCOUNT_ID}|<your-account-id>|g" spark-rbac.yaml | kubectl apply -f -
+    eks.amazonaws.com/role-arn: arn:aws:iam::${ACCOUNT_ID}:role/olist-spark-eks-role
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

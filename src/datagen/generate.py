@@ -108,6 +108,23 @@ def log_progress(table: str, count: int, scale: int):
     print(f"   📝 {table}: {count:,.0f} records (~{size_est_mb:.0f} MB)")
 
 
+# Width for zero-padded synthetic IDs. 12 digits covers >900B rows, so it is
+# safe at every supported scale and keeps IDs fixed-width for clean joins.
+ID_WIDTH = 12
+
+
+def _make_id(prefix: str, idx_col):
+    """Build a deterministic, fixed-width ID column like 'cust_000000000042'.
+
+    Using a deterministic function of a contiguous index is what guarantees
+    referential integrity: a child table can reference a parent by reproducing
+    the exact same formula over [0, parent_count), so every foreign key is
+    certain to exist. This replaces the previous monotonically_increasing_id()
+    join, which produced sparse, non-contiguous keys and left most FKs null.
+    """
+    return F.concat(F.lit(prefix), F.lpad(idx_col.cast(StringType()), ID_WIDTH, "0"))
+
+
 # ============================================================
 # GENERATORS
 # ============================================================
@@ -126,7 +143,7 @@ def generate_customers(spark: SparkSession, scale: int) -> None:
     # Generate UUIDs for IDs
     df = (
         df
-        .withColumn("customer_id", F.expr("uuid()"))
+        .withColumn("customer_id", _make_id("cust_", F.col("row_id")))
         .withColumn("customer_unique_id", F.expr("uuid()"))
         # Zip: 5-digit Brazilian CEP (01000-99999)
         .withColumn("customer_zip_code_prefix",
@@ -167,7 +184,7 @@ def generate_sellers(spark: SparkSession, scale: int) -> None:
 
     df = (
         df
-        .withColumn("seller_id", F.expr("uuid()"))
+        .withColumn("seller_id", _make_id("sell_", F.col("row_id")))
         .withColumn("seller_zip_code_prefix",
                     F.lpad((F.rand() * 99000 + 1000).cast(IntegerType()).cast(StringType()), 5, "0"))
         .withColumn("seller_city",
@@ -194,7 +211,7 @@ def generate_products(spark: SparkSession, scale: int) -> None:
 
     df = (
         df
-        .withColumn("product_id", F.expr("uuid()"))
+        .withColumn("product_id", _make_id("prod_", F.col("row_id")))
         .withColumn("product_category_name",
                     F.element_at(
                         F.array([F.lit(c) for c in PRODUCT_CATEGORIES]),
@@ -254,10 +271,9 @@ def generate_orders(spark: SparkSession, scale: int) -> None:
     count = get_scaled_count("orders", scale)
     print(f"\n🏭 Generating: orders ({count:,} records)")
 
-    # Read customer_ids for referential integrity
-    customers = spark.read.option("header", "true") \
-        .csv(f"{OUTPUT_PATH}/olist_customers_dataset.csv") \
-        .select("customer_id")
+    # Referential integrity is guaranteed by deterministic IDs:
+    # order.customer_id = "cust_<n>" for n in [0, num_customers).
+    num_customers = get_scaled_count("customers", scale)
 
     # Generate orders
     df = spark.range(0, count).toDF("row_id")
@@ -269,9 +285,9 @@ def generate_orders(spark: SparkSession, scale: int) -> None:
 
     df = (
         df
-        .withColumn("order_id", F.expr("uuid()"))
-        # Assign customer_ids by cycling through available customers
-        .withColumn("customer_idx", (F.col("row_id") % customers.count()).cast(LongType()))
+        .withColumn("order_id", _make_id("order_", F.col("row_id")))
+        # Reference an existing customer deterministically (cycles through them)
+        .withColumn("customer_id", _make_id("cust_", F.col("row_id") % num_customers))
         # Status: weighted random
         .withColumn("order_status",
                     F.element_at(
@@ -304,15 +320,7 @@ def generate_orders(spark: SparkSession, scale: int) -> None:
     )
 
     # Join with customers to get actual customer_ids (referential integrity)
-    customers_indexed = customers.withColumn(
-        "customer_idx", F.monotonically_increasing_id()
-    )
-
-    df = df.join(
-        F.broadcast(customers_indexed),
-        "customer_idx",
-        "left"
-    ).drop("customer_idx", "row_id")
+    df = df.drop("row_id")
 
     output = f"{OUTPUT_PATH}/olist_orders_dataset.csv"
     df.select("order_id", "customer_id", "order_status",
@@ -332,48 +340,24 @@ def generate_order_items(spark: SparkSession, scale: int) -> None:
     count = get_scaled_count("order_items", scale)
     print(f"\n🏭 Generating: order_items ({count:,} records)")
 
-    # Read referenced tables
-    orders = spark.read.option("header", "true") \
-        .csv(f"{OUTPUT_PATH}/olist_orders_dataset.csv") \
-        .select("order_id")
-
-    products = spark.read.option("header", "true") \
-        .csv(f"{OUTPUT_PATH}/olist_products_dataset.csv") \
-        .select("product_id")
-
-    sellers = spark.read.option("header", "true") \
-        .csv(f"{OUTPUT_PATH}/olist_sellers_dataset.csv") \
-        .select("seller_id")
+    # Counts come straight from the scale factor — no read-back or join needed.
+    num_orders = get_scaled_count("orders", scale)
+    num_products = get_scaled_count("products", scale)
+    num_sellers = get_scaled_count("sellers", scale)
 
     df = spark.range(0, count).toDF("row_id")
 
-    num_orders = orders.count()
-    num_products = products.count()
-    num_sellers = sellers.count()
-
     df = (
         df
-        # Each item links to an order (multiple items can share an order)
-        .withColumn("order_idx", (F.col("row_id") % num_orders).cast(LongType()))
-        .withColumn("product_idx", (F.rand() * num_products).cast(LongType()))
-        .withColumn("seller_idx", (F.rand() * num_sellers).cast(LongType()))
+        # Reference existing parents deterministically (guaranteed to exist)
+        .withColumn("order_id", _make_id("order_", F.col("row_id") % num_orders))
+        .withColumn("product_id", _make_id("prod_", (F.rand() * num_products).cast(LongType())))
+        .withColumn("seller_id", _make_id("sell_", (F.rand() * num_sellers).cast(LongType())))
         .withColumn("order_item_id", (F.col("row_id") % 5 + 1).cast(IntegerType()))
         .withColumn("shipping_limit_date", F.lit("2018-06-01 00:00:00"))
         .withColumn("price", F.round(F.rand() * 500 + 10, 2))
         .withColumn("freight_value", F.round(F.rand() * 80 + 5, 2))
-    )
-
-    # Join for referential integrity
-    orders_idx = orders.withColumn("order_idx", F.monotonically_increasing_id())
-    products_idx = products.withColumn("product_idx", F.monotonically_increasing_id())
-    sellers_idx = sellers.withColumn("seller_idx", F.monotonically_increasing_id())
-
-    df = (
-        df
-        .join(F.broadcast(orders_idx), "order_idx", "left")
-        .join(F.broadcast(products_idx), "product_idx", "left")
-        .join(F.broadcast(sellers_idx), "seller_idx", "left")
-        .drop("order_idx", "product_idx", "seller_idx", "row_id")
+        .drop("row_id")
     )
 
     output = f"{OUTPUT_PATH}/olist_order_items_dataset.csv"
@@ -389,16 +373,12 @@ def generate_order_payments(spark: SparkSession, scale: int) -> None:
     count = get_scaled_count("order_payments", scale)
     print(f"\n🏭 Generating: order_payments ({count:,} records)")
 
-    orders = spark.read.option("header", "true") \
-        .csv(f"{OUTPUT_PATH}/olist_orders_dataset.csv") \
-        .select("order_id")
-
-    num_orders = orders.count()
+    num_orders = get_scaled_count("orders", scale)
     df = spark.range(0, count).toDF("row_id")
 
     df = (
         df
-        .withColumn("order_idx", (F.col("row_id") % num_orders).cast(LongType()))
+        .withColumn("order_id", _make_id("order_", F.col("row_id") % num_orders))
         .withColumn("payment_sequential", (F.col("row_id") % 3 + 1).cast(IntegerType()))
         .withColumn("payment_type",
                     F.element_at(
@@ -407,11 +387,8 @@ def generate_order_payments(spark: SparkSession, scale: int) -> None:
                     ))
         .withColumn("payment_installments", (F.rand() * 12 + 1).cast(IntegerType()))
         .withColumn("payment_value", F.round(F.rand() * 600 + 15, 2))
+        .drop("row_id")
     )
-
-    orders_idx = orders.withColumn("order_idx", F.monotonically_increasing_id())
-    df = df.join(F.broadcast(orders_idx), "order_idx", "left") \
-           .drop("order_idx", "row_id")
 
     output = f"{OUTPUT_PATH}/olist_order_payments_dataset.csv"
     df.select("order_id", "payment_sequential", "payment_type",
@@ -426,17 +403,13 @@ def generate_order_reviews(spark: SparkSession, scale: int) -> None:
     count = get_scaled_count("order_reviews", scale)
     print(f"\n🏭 Generating: order_reviews ({count:,} records)")
 
-    orders = spark.read.option("header", "true") \
-        .csv(f"{OUTPUT_PATH}/olist_orders_dataset.csv") \
-        .select("order_id")
-
-    num_orders = orders.count()
+    num_orders = get_scaled_count("orders", scale)
     df = spark.range(0, count).toDF("row_id")
 
     df = (
         df
         .withColumn("review_id", F.expr("uuid()"))
-        .withColumn("order_idx", (F.col("row_id") % num_orders).cast(LongType()))
+        .withColumn("order_id", _make_id("order_", F.col("row_id") % num_orders))
         # Score distribution: skewed toward 5 (like real reviews)
         .withColumn("review_score",
                     F.when(F.rand() < 0.55, 5)
@@ -457,9 +430,7 @@ def generate_order_reviews(spark: SparkSession, scale: int) -> None:
                     ))
     )
 
-    orders_idx = orders.withColumn("order_idx", F.monotonically_increasing_id())
-    df = df.join(F.broadcast(orders_idx), "order_idx", "left") \
-           .drop("order_idx", "row_id")
+    df = df.drop("row_id")
 
     output = f"{OUTPUT_PATH}/olist_order_reviews_dataset.csv"
     df.select("review_id", "order_id", "review_score", "review_comment_title",
@@ -472,6 +443,29 @@ def generate_order_reviews(spark: SparkSession, scale: int) -> None:
 # ============================================================
 # MAIN
 # ============================================================
+def generate_category_translation(spark: SparkSession, scale: int) -> None:
+    """
+    Generate the product category translation table.
+
+    This table is static (independent of scale). It MUST contain every
+    product_category_name emitted by generate_products() so the Gold
+    dim_product join resolves an English category name for each product.
+    Previously this table was never generated, which broke the synthetic
+    Bronze ingestion (the CSV did not exist) and left dim_product without
+    English categories.
+    """
+    print(f"\n🏭 Generating: category_translation ({len(PRODUCT_CATEGORIES)} records)")
+
+    rows = [(c, c.replace("_", " ")) for c in PRODUCT_CATEGORIES]
+    df = spark.createDataFrame(
+        rows, ["product_category_name", "product_category_name_english"]
+    )
+
+    output = f"{OUTPUT_PATH}/product_category_name_translation.csv"
+    df.coalesce(1).write.option("header", "true").mode("overwrite").csv(output)
+    log_progress("category_translation", len(PRODUCT_CATEGORIES), scale)
+
+
 def generate_all(scale: int = 1000):
     """
     Generate all synthetic tables at the given scale factor.
@@ -511,6 +505,7 @@ def generate_all(scale: int = 1000):
     generate_sellers(spark, scale)
     generate_products(spark, scale)
     generate_geolocation(spark, scale)
+    generate_category_translation(spark, scale)
 
     # --- Phase 2: Transactional (references base entities) ---
     print("\n" + "-" * 40)

@@ -90,6 +90,30 @@ TABLE_CONFIGS = {
 
 
 # ============================================================
+# PURE HELPERS (no I/O — unit-testable)
+# ============================================================
+def split_corrupt_records(raw_df):
+    """Split a PERMISSIVE-mode read into (good_df, bad_df).
+
+    Good rows have a null _corrupt_record (and the column is dropped); bad rows
+    have it populated and are kept intact for quarantine.
+    """
+    good_df = raw_df.filter(F.col("_corrupt_record").isNull()).drop("_corrupt_record")
+    bad_df = raw_df.filter(F.col("_corrupt_record").isNotNull())
+    return good_df, bad_df
+
+
+def add_ingestion_metadata(df, source_file, batch_id, ingestion_time):
+    """Add Bronze audit metadata columns to every record."""
+    return (
+        df
+        .withColumn("_ingestion_timestamp", F.lit(ingestion_time))
+        .withColumn("_source_file", F.lit(source_file))
+        .withColumn("_batch_id", F.lit(batch_id))
+    )
+
+
+# ============================================================
 # GENERIC INGESTION FUNCTION
 # ============================================================
 def ingest_to_bronze(table_name: str) -> int:
@@ -132,19 +156,13 @@ def ingest_to_bronze(table_name: str) -> int:
     )
 
     # --- Separate good from bad ---
-    good_df = raw_df.filter(F.col("_corrupt_record").isNull()).drop("_corrupt_record")
-    bad_df = raw_df.filter(F.col("_corrupt_record").isNotNull())
+    good_df, bad_df = split_corrupt_records(raw_df)
 
     # --- Add metadata ---
     batch_id = str(uuid.uuid4())
     ingestion_time = datetime.now().isoformat()
 
-    enriched_df = (
-        good_df
-        .withColumn("_ingestion_timestamp", F.lit(ingestion_time))
-        .withColumn("_source_file", F.lit(source_file))
-        .withColumn("_batch_id", F.lit(batch_id))
-    )
+    enriched_df = add_ingestion_metadata(good_df, source_file, batch_id, ingestion_time)
 
     # --- Write to Bronze (Delta) ---
     enriched_df.write.format("delta").mode("overwrite").save(bronze_path)
